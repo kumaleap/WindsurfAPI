@@ -164,23 +164,13 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       const pull = dirty ? 'hard-reset applied' : await runShell(pullCmd);
       const after = await gitStatus();
       const changed = before.commit !== after.commit;
-      // Schedule a detached restart so this response can flush before PM2 kills us.
-      // ESM-friendly import (require is unavailable in type:module).
+      // Schedule process exit so PM2 auto-restarts us. This is far simpler
+      // and port/env-agnostic compared to spawning update.sh (which hardcodes
+      // PORT=3003 default). Requires PM2 autorestart: true (the default).
       if (changed) {
-        setTimeout(async () => {
-          try {
-            const { spawn } = await import('node:child_process');
-            const cp = spawn('bash', ['update.sh'], {
-              detached: true,
-              stdio: 'ignore',
-              cwd: process.cwd(),
-              env: { ...process.env, PM2_NAME: 'windsurf-api' },
-            });
-            cp.unref();
-            log.info('self-update: spawned update.sh');
-          } catch (e) {
-            log.error('self-update spawn failed:', e.message);
-          }
+        setTimeout(() => {
+          log.info('self-update: exiting for PM2 auto-restart');
+          process.exit(0);
         }, 800);
       }
       return json(res, 200, {
