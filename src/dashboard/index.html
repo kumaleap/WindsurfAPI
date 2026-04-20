@@ -1082,17 +1082,22 @@ tbody tr:hover td { background: var(--surface-2); }
         </div>
       </div>
       <div class="section-body">
+        <div style="padding:8px 12px;margin-bottom:12px;background:var(--surface-2);border-radius:var(--radius);font-size:12px;color:var(--text-muted);line-height:1.6">
+          推荐用 Token 方式添加账号 点
+          <a href="https://windsurf.com/show-auth-token" target="_blank" style="color:var(--accent);font-weight:600">windsurf.com/show-auth-token</a>
+          登录后复制 Token 粘贴到下面就行 所有登录方式（邮箱/Google/GitHub）都能用
+        </div>
         <div class="field-row">
           <div class="field" style="max-width:180px">
             <label class="field-label">类型</label>
             <select id="acc-type" class="select">
+              <option value="token" selected>Auth Token</option>
               <option value="api_key">API Key</option>
-              <option value="token">Auth Token</option>
             </select>
           </div>
           <div class="field" style="flex:2">
             <label class="field-label">Key / Token</label>
-            <input id="acc-key" class="input" placeholder="粘贴 API Key 或 Auth Token...">
+            <input id="acc-key" class="input" placeholder="粘贴 Auth Token（从 windsurf.com/show-auth-token 获取）">
           </div>
           <div class="field" style="max-width:200px">
             <label class="field-label">标签</label>

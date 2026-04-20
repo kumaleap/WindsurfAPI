@@ -73,7 +73,10 @@ function cachedUsage(messages, completionText) {
     prompt_tokens: prompt,
     completion_tokens: completion,
     total_tokens: prompt + completion,
+    input_tokens: prompt,
+    output_tokens: completion,
     prompt_tokens_details: { cached_tokens: prompt },
+    completion_tokens_details: { reasoning_tokens: 0 },
     cached: true,
   };
 }
@@ -106,7 +109,10 @@ function buildUsageBody(serverUsage, messages, completionText, thinkingText = ''
       prompt_tokens: promptTotal,
       completion_tokens: outputTokens,
       total_tokens: promptTotal + outputTokens,
+      input_tokens: promptTotal,
+      output_tokens: outputTokens,
       prompt_tokens_details: { cached_tokens: cacheRead },
+      completion_tokens_details: { reasoning_tokens: 0 },
       cache_creation_input_tokens: cacheWrite,
     };
   }
@@ -116,7 +122,10 @@ function buildUsageBody(serverUsage, messages, completionText, thinkingText = ''
     prompt_tokens: prompt,
     completion_tokens: completion,
     total_tokens: prompt + completion,
+    input_tokens: prompt,
+    output_tokens: completion,
     prompt_tokens_details: { cached_tokens: 0 },
+    completion_tokens_details: { reasoning_tokens: 0 },
   };
 }
 
@@ -715,8 +724,10 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
                 choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
             }
             const finalReason = collectedToolCalls.length ? 'tool_calls' : 'stop';
+            const finalUsage = buildUsageBody(cascadeResult?.usage || null, messages, accText, accThinking);
             send({ id, object: 'chat.completion.chunk', created, model,
-              choices: [{ index: 0, delta: {}, finish_reason: finalReason }] });
+              choices: [{ index: 0, delta: {}, finish_reason: finalReason }],
+              usage: finalUsage });
             // OpenAI-compat: terminal usage chunk (stream_options.include_usage
             // convention — empty choices[] + usage). Prefer Cascade's own
             // CortexStepMetadata.model_usage numbers when present, fall back
