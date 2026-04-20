@@ -128,6 +128,43 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
     }
   }
 
+  // ─── Self-update: pull latest code + restart PM2 ──────
+  if (subpath === '/self-update/check' && method === 'GET') {
+    try {
+      const info = await gitStatus();
+      return json(res, 200, { ok: true, ...info });
+    } catch (err) {
+      return json(res, 200, { ok: false, error: err.message });
+    }
+  }
+  if (subpath === '/self-update' && method === 'POST') {
+    try {
+      const before = await gitStatus();
+      const pull = await runShell('git pull --ff-only 2>&1');
+      const after = await gitStatus();
+      const changed = before.commit !== after.commit;
+      // Schedule a detached restart so this response can flush before PM2 kills us.
+      if (changed) {
+        setTimeout(() => {
+          try {
+            const { spawn } = require('node:child_process');
+            spawn('bash', ['update.sh'], { detached: true, stdio: 'ignore' }).unref();
+          } catch {}
+        }, 800);
+      }
+      return json(res, 200, {
+        ok: true,
+        changed,
+        before: before.commit,
+        after: after.commit,
+        pullOutput: pull.trim(),
+        restarting: changed,
+      });
+    } catch (err) {
+      return json(res, 200, { ok: false, error: err.message });
+    }
+  }
+
   // ─── Cache ────────────────────────────────────────────
   if (subpath === '/cache' && method === 'GET') {
     return json(res, 200, cacheStats());
@@ -495,6 +532,40 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
 // ─── Proxy connectivity test ──────────────────────────────
 // HTTP CONNECT tunnel to api.ipify.org:443 → GET / → the returned IP is the
 // proxy's egress IP. Confirms the proxy works AND that auth is accepted.
+// ─── Self-update helpers ───────────────────────────────
+function runShell(cmd, opts = {}) {
+  return new Promise((resolve, reject) => {
+    import('node:child_process').then(({ exec }) => {
+      exec(cmd, { timeout: 30_000, maxBuffer: 1024 * 1024, ...opts }, (err, stdout, stderr) => {
+        if (err) return reject(new Error((stderr || err.message).toString().slice(0, 500)));
+        resolve(stdout.toString());
+      });
+    }).catch(reject);
+  });
+}
+
+async function gitStatus() {
+  const commit = (await runShell('git rev-parse HEAD')).trim();
+  const branch = (await runShell('git rev-parse --abbrev-ref HEAD')).trim();
+  let remote = '';
+  try {
+    await runShell('git fetch --quiet origin');
+    remote = (await runShell(`git rev-parse origin/${branch}`)).trim();
+  } catch {}
+  const localMsg = (await runShell('git log -1 --pretty=format:%s')).trim();
+  const behind = remote && remote !== commit;
+  const remoteMsg = behind ? (await runShell(`git log -1 --pretty=format:%s ${remote}`).catch(() => '')).trim() : '';
+  return {
+    commit: commit.slice(0, 7),
+    commitFull: commit,
+    branch,
+    localMessage: localMsg,
+    remoteCommit: remote ? remote.slice(0, 7) : '',
+    remoteMessage: remoteMsg,
+    behind,
+  };
+}
+
 async function testProxy({ host, port, username, password, type }) {
   const http = await import('node:http');
   const tls = await import('node:tls');

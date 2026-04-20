@@ -353,7 +353,10 @@ export class WindsurfClient {
         //       what we have as a complete response rather than waiting
         //       out the full 180s maxWait with the client hanging.
         const elapsed = Date.now() - startTime;
-        const coldStallMs = Math.min(90_000, 30_000 + Math.floor(inputChars / 2000) * 5_000);
+        // Cap at maxWait (180s): long-context requests can legitimately take
+        // that long to emit the first token from Cascade. Was 90s which
+        // still tripped on very long prompts (issue #5).
+        const coldStallMs = Math.min(maxWait, 30_000 + Math.floor(inputChars / 1500) * 5_000);
         if (elapsed > coldStallMs && sawActive && !sawText && seenToolCallIds.size === 0) {
           log.warn(`Cascade cold stall: ${elapsed}ms active without any text or tool call (threshold=${coldStallMs}ms, inputChars=${inputChars}), bailing`);
           endReason = 'stall_cold';
