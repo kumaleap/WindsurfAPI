@@ -9,7 +9,7 @@ import {
   removeAccount, setAccountStatus, resetAccountErrors, updateAccountLabel,
   isAuthenticated, probeAccount, ensureLsForAccount,
   refreshCredits, refreshAllCredits,
-  setAccountBlockedModels, setAccountTokens,
+  setAccountBlockedModels, setAccountTokens, setAccountTier,
 } from '../auth.js';
 import { restartLsForProxy } from '../langserver.js';
 import { getLsStatus, stopLanguageServer, startLanguageServer, isLanguageServerRunning } from '../langserver.js';
@@ -270,6 +270,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
     if (body.label) updateAccountLabel(id, body.label);
     if (body.resetErrors) resetAccountErrors(id);
     if (Array.isArray(body.blockedModels)) setAccountBlockedModels(id, body.blockedModels);
+    if (body.tier) setAccountTier(id, body.tier);
     return json(res, 200, { success: true });
   }
 

@@ -263,6 +263,24 @@ export function updateAccountLabel(id, label) {
  * Fields with undefined are left unchanged. Always flushes to disk so the
  * rotation survives a restart even if the caller never saves explicitly.
  */
+/**
+ * Manually force an account's tier. Used when automatic probing mis-
+ * classifies an account — e.g. 14-day Pro trials whose planName doesn't
+ * match our regex, or accounts whose initial probe was blocked by an
+ * upstream bug and now carry a stale "free" tag even though the real
+ * subscription is Pro.
+ */
+export function setAccountTier(id, tier) {
+  if (!['pro', 'free', 'unknown', 'expired'].includes(tier)) return false;
+  const account = accounts.find(a => a.id === id);
+  if (!account) return false;
+  account.tier = tier;
+  account.tierManual = true;
+  saveAccounts();
+  log.info(`Account ${id} tier manually set to ${tier}`);
+  return true;
+}
+
 export function setAccountTokens(id, { apiKey, refreshToken, idToken } = {}) {
   const account = accounts.find(a => a.id === id);
   if (!account) return false;
@@ -565,9 +583,14 @@ export async function refreshCredits(id) {
     const { raw, ...persist } = status;
     account.credits = persist;
     // Tier hint: if the plan info is explicit, prefer it over capability probing.
-    if (status.planName && /pro|teams|enterprise/i.test(status.planName)) {
+    // Trial / individual accounts also count as pro — Windsurf returns
+    // "INDIVIDUAL" / "TRIAL" / similar for paid-tier trials (issue #8 follow-up:
+    // motto1's 14-day Pro trial was misclassified as free because planName
+    // wasn't "Pro").
+    const pn = status.planName || '';
+    if (/pro|teams|enterprise|trial|individual|premium|paid/i.test(pn)) {
       if (account.tier !== 'pro') account.tier = 'pro';
-    } else if (/free/i.test(status.planName || '')) {
+    } else if (/free/i.test(pn)) {
       if (account.tier === 'unknown') account.tier = 'free';
     }
     saveAccounts();
