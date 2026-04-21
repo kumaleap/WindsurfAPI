@@ -176,6 +176,9 @@ function normalizeRequestedModelName(name) {
 // available internal model. This keeps sub2api / Claude Code compatible while
 // centralising the model compatibility logic in WindsurfAPI.
 const ANTHROPIC_COMPAT_ALIASES = {
+  'claude-3.5-sonnet': 'claude-sonnet-4.6',
+  'claude-3.7-sonnet': 'claude-sonnet-4.6',
+  'claude-3.7-sonnet-thinking': 'claude-sonnet-4.6-thinking',
   'claude-opus-4-6': 'claude-opus-4.6',
   'claude-opus-4-6-thinking': 'claude-opus-4.6-thinking',
   'claude-sonnet-4-6': 'claude-sonnet-4.6',

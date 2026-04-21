@@ -43,11 +43,73 @@ const STREAM_FOLLOWUP_BOUNDARY_CHARS = 24;
 const STREAM_FOLLOWUP_BOUNDARY_MS = 90;
 const STREAM_FOLLOWUP_THINKING_COMMIT_CHARS = 20;
 const STREAM_FOLLOWUP_THINKING_COMMIT_MS = 120;
+const HAIKU_TOOL_OUTPUT_GUARD_INPUT_CHARS = 30_000;
+const LONG_TOOL_OUTPUT_GUARD_INPUT_CHARS = 120_000;
+const DEFAULT_HAIKU_OUTPUT_GUARD_TOKENS = 900;
+const DEFAULT_TOOL_OUTPUT_GUARD_TOKENS = 1200;
 
 function endsAtNaturalBoundary(text) {
   if (!text) return false;
   const tail = text.slice(-6);
   return /(?:\r?\n\s*$|[.!?。！？:：;；]\s*$|[)\]」』】]\s*$)/.test(tail);
+}
+
+function estimateMessageChars(messages) {
+  if (!Array.isArray(messages)) return 0;
+  let chars = 0;
+  for (const msg of messages) {
+    const content = msg?.content;
+    if (typeof content === 'string') {
+      chars += content.length;
+      continue;
+    }
+    if (Array.isArray(content)) {
+      for (const part of content) {
+        if (typeof part?.text === 'string') chars += part.text.length;
+      }
+    }
+    if (Array.isArray(msg?.tool_calls)) {
+      for (const tc of msg.tool_calls) {
+        chars += (tc.function?.name || '').length;
+        chars += (tc.function?.arguments || '').length;
+      }
+    }
+  }
+  return chars;
+}
+
+function isOutputLimitError(err) {
+  return /maximum output token limit|max output token/i.test(err?.message || '');
+}
+
+function getPartialFinishReason(err) {
+  return isOutputLimitError(err) ? 'length' : 'stop';
+}
+
+function buildOutputGuardSystemMessage(modelKey, maxTokens, emulateTools, inputChars) {
+  const requestedTokens = Number.isFinite(maxTokens) && maxTokens > 0
+    ? Math.max(64, Math.floor(maxTokens))
+    : null;
+  const isHaiku = modelKey === 'claude-4.5-haiku';
+  const shouldGuard = !!(
+    (requestedTokens && requestedTokens <= 1400)
+    || (isHaiku && emulateTools && inputChars >= HAIKU_TOOL_OUTPUT_GUARD_INPUT_CHARS)
+    || (emulateTools && inputChars >= LONG_TOOL_OUTPUT_GUARD_INPUT_CHARS)
+  );
+  if (!shouldGuard) return null;
+
+  const budgetTokens = requestedTokens
+    ? Math.min(requestedTokens, isHaiku ? DEFAULT_HAIKU_OUTPUT_GUARD_TOKENS : DEFAULT_TOOL_OUTPUT_GUARD_TOKENS)
+    : (isHaiku ? DEFAULT_HAIKU_OUTPUT_GUARD_TOKENS : DEFAULT_TOOL_OUTPUT_GUARD_TOKENS);
+  const budgetWords = Math.max(120, Math.round(budgetTokens * 0.75));
+
+  return [
+    'Output budget for this request:',
+    `Keep the final answer under roughly ${budgetTokens} tokens (${budgetWords} words) unless the user explicitly requires a shorter limit.`,
+    'If tool results are large, summarize them instead of reproducing them verbatim.',
+    'Do not dump raw tool output, logs, JSON, or repeated evidence unless the user explicitly asks for the raw data.',
+    'Prefer the shortest complete answer that still solves the user request.',
+  ].join('\n');
 }
 
 function summarizeStreamMetrics(metrics) {
@@ -229,6 +291,8 @@ export async function handleChatCompletions(body) {
   let cascadeMessages = emulateTools
     ? normalizeMessagesForCascade(messages, [])
     : [...messages];
+  const inputChars = estimateMessageChars(messages);
+  const outputGuard = buildOutputGuardSystemMessage(modelKey, max_tokens, emulateTools, inputChars);
 
   // ── Model identity prompt injection ──
   // When enabled, prepend a system message so the model identifies itself as
@@ -244,6 +308,10 @@ export async function handleChatCompletions(body) {
       cascadeMessages = [sysMsg, ...cascadeMessages];
       messages = [sysMsg, ...messages];
     }
+  }
+
+  if (outputGuard) {
+    cascadeMessages = [{ role: 'system', content: outputGuard }, ...cascadeMessages];
   }
 
   // Global model access control (allowlist / blocklist from dashboard)
@@ -845,10 +913,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
             log.info('Chat: cascade reuse skipped — LS port changed');
             reuseEntry = null;
           }
-          const _msgCharsStream = (messages || []).reduce((n, m) => {
-            const c = m?.content;
-            return n + (typeof c === 'string' ? c.length : Array.isArray(c) ? c.reduce((k, p) => k + (typeof p?.text === 'string' ? p.text.length : 0), 0) : 0);
-          }, 0);
+          const _msgCharsStream = estimateMessageChars(messages);
           log.info(`Chat: model=${model} flow=${useCascade ? 'cascade' : 'legacy'} stream=true attempt=${attempt + 1} account=${acct.email} ls=${ls.port} turns=${(messages||[]).length} chars=${_msgCharsStream}${reuseEntry ? ' reuse=1' : ''}`);
           const client = new WindsurfClient(acct.apiKey, ls.port, ls.csrfToken);
           let cascadeResult = null;
@@ -971,13 +1036,14 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
 
         streamMetrics.finishedBy = committedOutput ? 'graceful_partial_close' : 'failed_before_output';
         log.error('Stream error after retries:', lastErr?.message);
-        recordRequest(model, false, Date.now() - startTime, currentApiKey);
+        recordRequest(model, committedOutput, Date.now() - startTime, currentApiKey);
         try {
           if (committedOutput) {
             if (!rolePrinted) ensureRoleChunk();
             const usage = buildUsageBody(null, messages, accText, accThinking);
+            const partialFinishReason = getPartialFinishReason(lastErr);
             send({ id, object: 'chat.completion.chunk', created, model,
-              choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+              choices: [{ index: 0, delta: {}, finish_reason: partialFinishReason }],
               usage });
             send({ id, object: 'chat.completion.chunk', created, model,
               choices: [], usage });
