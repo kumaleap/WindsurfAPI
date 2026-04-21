@@ -147,7 +147,7 @@ export async function getUserStatus(apiKey, proxy = null) {
         return normalizeUserStatus(res.data);
       } catch (e) {
         lastErr = e;
-        log.debug(`GetUserStatus host ${host} failed: ${e.message}`);
+        log.debug(`getCreditUsage ${host} failed: ${e.message}`);
         if (px && isProxyError(e)) break; // skip second host, go straight to direct
       }
     }
