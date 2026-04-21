@@ -1551,7 +1551,7 @@ const I18N_EN = {
 };
 
 const App = {
-  password: localStorage.getItem('dp') || '',
+  password: '',
   lang: localStorage.getItem('lang') || 'zh',
   sseConn: null,
   logEntries: [],
@@ -1560,6 +1560,53 @@ const App = {
   modelAccessConfig: { mode: 'all', list: [] },
   loginHistory: JSON.parse(localStorage.getItem('wl_history') || '[]'),
   _filterTimer: null,
+
+  normalizePassword(value) {
+    return String(value || '').trim();
+  },
+
+  // Browser fetch rejects header values that contain non ISO-8859-1 code
+  // points, CR, or LF. Guard cached dashboard passwords before every request.
+  isHeaderSafeValue(value) {
+    for (const ch of value) {
+      const cp = ch.codePointAt(0);
+      if (cp > 0xFF || cp === 0x0A || cp === 0x0D) return false;
+    }
+    return true;
+  },
+
+  loadPasswordFromStorage() {
+    const raw = localStorage.getItem('dp') || '';
+    const normalized = this.normalizePassword(raw);
+    const input = document.getElementById('login-password');
+
+    if (!normalized) {
+      this.password = '';
+      localStorage.removeItem('dp');
+      if (input) input.value = '';
+      return;
+    }
+
+    if (!this.isHeaderSafeValue(normalized)) {
+      this.password = '';
+      localStorage.removeItem('dp');
+      if (input) input.value = '';
+      this.toast('登录密码包含浏览器不支持的字符，请改用 ASCII 或 Latin-1 字符。', 'error');
+      return;
+    }
+
+    this.password = normalized;
+    if (input) input.value = normalized;
+  },
+
+  persistPassword(value) {
+    const normalized = this.normalizePassword(value);
+    this.password = normalized;
+    const input = document.getElementById('login-password');
+    if (input) input.value = normalized;
+    if (normalized) localStorage.setItem('dp', normalized);
+    else localStorage.removeItem('dp');
+  },
 
   applyLang() {
     const indicator = document.getElementById('lang-indicator');
@@ -1596,6 +1643,7 @@ const App = {
 
   async init() {
     this.applyLang();
+    this.loadPasswordFromStorage();
     const auth = await this.api('GET', '/auth');
     if (auth.required && !auth.valid) {
       document.getElementById('login-overlay').classList.remove('hidden');
@@ -1611,8 +1659,12 @@ const App = {
   },
 
   login() {
-    this.password = document.getElementById('login-password').value;
-    localStorage.setItem('dp', this.password);
+    const nextPassword = this.normalizePassword(document.getElementById('login-password').value);
+    if (nextPassword && !this.isHeaderSafeValue(nextPassword)) {
+      this.toast('登录密码包含浏览器不支持的字符，请改用 ASCII 或 Latin-1 字符。', 'error');
+      return;
+    }
+    this.persistPassword(nextPassword);
     this.init();
   },
 

@@ -7,11 +7,12 @@ over gRPC, and exposes `/v1/chat/completions` to OpenAI-compatible clients.
 ## Run it
 
 ```bash
-node src/index.js          # prod entry
-node --watch src/index.js  # dev (npm run dev)
+npm start          # production
+npm run dev        # with --watch (dev mode)
 ```
 
 Requires Node >= 20. Zero npm deps — the whole project is pure `node:*` builtins.
+Copy `.env.example` to `.env` and configure at minimum `CODEIUM_API_KEY` or `CODEIUM_AUTH_TOKEN`.
 Language server binary must exist at `config.lsBinaryPath` (default
 `/opt/windsurf/language_server_linux_x64`). On Windows the LS won't start, but
 the HTTP server and dashboard still come up for local dev of non-chat paths.
@@ -28,6 +29,8 @@ src/
   langserver.js      - LS pool: one binary per unique egress proxy
   client.js          - WindsurfClient: StartCascade / Send / poll trajectory
   windsurf.js        - protobuf builders + parsers (exa.language_server_pb, exa.cortex_pb)
+  windsurf-api.js    - request/response sanitization middleware
+  sanitize.js        - input sanitization helpers
   proto.js           - minimal varint/length-prefixed reader/writer
   grpc.js            - gRPC-over-HTTP2 unary call helper
   connect.js         - Firebase + api.codeium.com sign-in (register_user)
@@ -37,6 +40,7 @@ src/
   handlers/
     chat.js          - /v1/chat/completions: model routing, retry, tool emulation
     models.js        - /v1/models
+    messages.js      - /v1/messages (Conversations API)
     tool-emulation.js - prompt-level <tool_call> protocol for Cascade (no native slot)
   dashboard/
     api.js           - /dashboard/api/* admin routes
@@ -124,9 +128,7 @@ Persisted state lives in JSON files next to `src/`:
 ## Deploy
 
 - **Main (43.153.139.136:3003):** SCP → `pm2 stop && pm2 delete windsurf-api && fuser -k 3003/tcp && sleep 2 && pm2 start`.
-- **US (154.40.36.22:8996):** `python deploy-us.py` — paramiko-based, does the full
-  stop/kill/start cycle and tails health. Don't use raw `pm2 restart` — it leaves
-  zombie Node processes holding the port.
+- **US (154.40.36.22:8996):** Don't use raw `pm2 restart` — it leaves zombie Node processes holding the port. Use Python + paramiko inline for SSH.
 
 Windows has no `sshpass`; if you need to SSH, use Python + paramiko inline.
 

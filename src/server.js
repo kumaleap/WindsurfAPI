@@ -20,8 +20,9 @@ import {
   addAccountByEmail, addAccountByToken, addAccountByKey, removeAccount,
 } from './auth.js';
 import { handleChatCompletions } from './handlers/chat.js';
-import { handleMessages } from './handlers/messages.js';
+import { handleMessages, handleCountTokens } from './handlers/messages.js';
 import { handleModels } from './handlers/models.js';
+import { handleResponses } from './handlers/responses.js';
 import { handleDashboardApi } from './dashboard/api.js';
 import { config, log } from './config.js';
 
@@ -57,11 +58,13 @@ function readBody(req) {
 
 function extractToken(req) {
   // Anthropic SDK + OAI SDK compatibility: accept either header.
-  const authHeader = req.headers['authorization'] || '';
-  if (authHeader.startsWith('Bearer ')) return authHeader.slice(7);
-  if (authHeader) return authHeader;
-  const xApiKey = req.headers['x-api-key'] || '';
-  return xApiKey;
+  const authHeader = (req.headers['authorization'] || '').trim();
+  if (authHeader) return authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
+
+  const apiKeyHeader = (req.headers['x-api-key'] || '').trim();
+  if (apiKeyHeader) return apiKeyHeader;
+
+  return '';
 }
 
 function json(res, status, body) {
@@ -70,7 +73,7 @@ function json(res, status, body) {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-API-Key',
   });
   res.end(data);
 }
@@ -202,6 +205,28 @@ async function route(req, res) {
     return json(res, 200, handleModels());
   }
 
+  if ((path === '/v1/responses' || path === '/responses') && method === 'POST') {
+    if (!isAuthenticated()) {
+      return json(res, 503, {
+        error: { message: 'No active accounts. POST /auth/login to add accounts.', type: 'auth_error' },
+      });
+    }
+
+    let body;
+    try { body = JSON.parse(await readBody(req)); } catch {
+      return json(res, 400, { error: { message: 'Invalid JSON', type: 'invalid_request' } });
+    }
+
+    const result = await handleResponses(body);
+    if (result.stream) {
+      res.writeHead(result.status, { 'Access-Control-Allow-Origin': '*', ...result.headers });
+      await result.handler(res);
+    } else {
+      json(res, result.status, result.body);
+    }
+    return;
+  }
+
   if (path === '/v1/chat/completions' && method === 'POST') {
     if (!isAuthenticated()) {
       return json(res, 503, {
@@ -228,6 +253,19 @@ async function route(req, res) {
       json(res, result.status, result.body);
     }
     return;
+  }
+
+  // Anthropic Messages API — Claude Code compatibility
+  if (path === '/v1/messages/count_tokens' && method === 'POST') {
+    if (!isAuthenticated()) {
+      return json(res, 503, { type: 'error', error: { type: 'api_error', message: 'No active accounts' } });
+    }
+    let body;
+    try { body = JSON.parse(await readBody(req)); } catch {
+      return json(res, 400, { type: 'error', error: { type: 'invalid_request_error', message: 'Invalid JSON' } });
+    }
+    const result = handleCountTokens(body);
+    return json(res, result.status, result.body);
   }
 
   // Anthropic Messages API — Claude Code compatibility

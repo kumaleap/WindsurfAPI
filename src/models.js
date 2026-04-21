@@ -158,40 +158,145 @@ export const MODELS = {
   'arena-smart':                    { name: 'arena-smart',                    provider: 'windsurf', enumValue: 0,   modelUid: 'arena-smart', credit: 1 },
 };
 
+function registerAlias(map, alias, canonical) {
+  if (!alias || !canonical) return;
+  map.set(alias, canonical);
+  map.set(alias.toLowerCase(), canonical);
+}
+
+function normalizeRequestedModelName(name) {
+  if (!name) return '';
+  return String(name).trim()
+    .replace(/\[(1m)\]/gi, '-$1')
+    .replace(/-(1m)-thinking$/i, '-thinking-$1');
+}
+
+// Windsurf's internal model catalog does not use Anthropic's dated public IDs
+// consistently, so we accept the public IDs here and map them onto the closest
+// available internal model. This keeps sub2api / Claude Code compatible while
+// centralising the model compatibility logic in WindsurfAPI.
+const ANTHROPIC_COMPAT_ALIASES = {
+  'claude-opus-4-6': 'claude-opus-4.6',
+  'claude-opus-4-6-thinking': 'claude-opus-4.6-thinking',
+  'claude-sonnet-4-6': 'claude-sonnet-4.6',
+  'claude-sonnet-4-6-thinking': 'claude-sonnet-4.6-thinking',
+  'claude-sonnet-4-6-1m': 'claude-sonnet-4.6-1m',
+  'claude-sonnet-4-6-thinking-1m': 'claude-sonnet-4.6-thinking-1m',
+  'claude-sonnet-4-6[1m]': 'claude-sonnet-4.6-1m',
+  'claude-sonnet-4-6-thinking[1m]': 'claude-sonnet-4.6-thinking-1m',
+  'claude-sonnet-4.6[1m]': 'claude-sonnet-4.6-1m',
+  'claude-sonnet-4.6-thinking[1m]': 'claude-sonnet-4.6-thinking-1m',
+  'claude-3-5-sonnet-20241022': 'claude-sonnet-4.6',
+  'claude-3-5-sonnet-20240620': 'claude-sonnet-4.6',
+  'claude-3-5-haiku-20241022': 'claude-4.5-haiku',
+  'claude-3-opus-20240229': 'claude-opus-4.6',
+  'claude-3-sonnet-20240229': 'claude-sonnet-4.6',
+  'claude-3-haiku-20240307': 'claude-4.5-haiku',
+  'claude-3-7-sonnet-20250219': 'claude-sonnet-4.6',
+  'claude-sonnet-4-20250514': 'claude-sonnet-4.6',
+  'claude-opus-4-20250514': 'claude-opus-4.6',
+  'claude-opus-4-1-20250805': 'claude-opus-4.6',
+  'claude-sonnet-4-5-20250929': 'claude-sonnet-4.6',
+  'claude-haiku-4-5-20251001': 'claude-4.5-haiku',
+  'claude-opus-4-5-20251101': 'claude-opus-4.6',
+  'claude-opus-4-7': 'claude-opus-4.6',
+  'claude-2.1': 'claude-sonnet-4.6',
+  'claude-2.0': 'claude-sonnet-4.6',
+  'claude-instant-1.2': 'claude-4.5-haiku',
+};
+
+function resolveAnthropicFamilyFallback(name) {
+  const lower = normalizeRequestedModelName(name).toLowerCase();
+  if (!lower.startsWith('claude')) return null;
+
+  if (lower.includes('haiku') || lower.includes('instant')) {
+    return 'claude-4.5-haiku';
+  }
+
+  if (lower.includes('sonnet')) {
+    if (lower.includes('1m')) {
+      return lower.includes('thinking')
+        ? 'claude-sonnet-4.6-thinking-1m'
+        : 'claude-sonnet-4.6-1m';
+    }
+    if (lower.includes('4-5') || lower.includes('4.5')) {
+      return lower.includes('thinking')
+        ? 'claude-4.5-sonnet-thinking'
+        : 'claude-4.5-sonnet';
+    }
+    if (lower.includes('3-7') || lower.includes('3.7')) {
+      return lower.includes('thinking')
+        ? 'claude-3.7-sonnet-thinking'
+        : 'claude-3.7-sonnet';
+    }
+    if (lower.includes('4-20250514') || lower.includes('claude-4-sonnet')) {
+      return lower.includes('thinking')
+        ? 'claude-4-sonnet-thinking'
+        : 'claude-4-sonnet';
+    }
+    return lower.includes('thinking')
+      ? 'claude-sonnet-4.6-thinking'
+      : 'claude-sonnet-4.6';
+  }
+
+  if (lower.includes('opus')) {
+    if (lower.includes('4-5') || lower.includes('4.5')) {
+      return lower.includes('thinking')
+        ? 'claude-4.5-opus-thinking'
+        : 'claude-4.5-opus';
+    }
+    if (lower.includes('4-1') || lower.includes('4.1')) {
+      return lower.includes('thinking')
+        ? 'claude-4.1-opus-thinking'
+        : 'claude-4.1-opus';
+    }
+    if (lower.includes('4-20250514') || lower.includes('claude-4-opus')) {
+      return lower.includes('thinking')
+        ? 'claude-4-opus-thinking'
+        : 'claude-4-opus';
+    }
+    return lower.includes('thinking')
+      ? 'claude-opus-4.6-thinking'
+      : 'claude-opus-4.6';
+  }
+
+  if (lower.startsWith('claude-2')) {
+    return 'claude-sonnet-4.6';
+  }
+
+  return null;
+}
+
 // Build reverse lookup
 const _lookup = new Map();
 for (const [id, info] of Object.entries(MODELS)) {
-  _lookup.set(id, id);
-  _lookup.set(id.toLowerCase(), id);
-  _lookup.set(info.name, id);
-  _lookup.set(info.name.toLowerCase(), id);
-  if (info.modelUid) _lookup.set(info.modelUid, id);
-  if (info.modelUid) _lookup.set(info.modelUid.toLowerCase(), id);
+  registerAlias(_lookup, id, id);
+  registerAlias(_lookup, info.name, id);
+  if (info.modelUid) registerAlias(_lookup, info.modelUid, id);
 }
 // Legacy aliases
-_lookup.set('claude-sonnet-4-6-thinking', 'claude-sonnet-4.6-thinking');
-_lookup.set('claude-opus-4-6-thinking', 'claude-opus-4.6-thinking');
-_lookup.set('claude-sonnet-4-6', 'claude-sonnet-4.6');
-_lookup.set('claude-opus-4-6', 'claude-opus-4.6');
-_lookup.set('MODEL_CLAUDE_4_5_SONNET', 'claude-4.5-sonnet');
-_lookup.set('MODEL_CLAUDE_4_5_SONNET_THINKING', 'claude-4.5-sonnet-thinking');
-// UID-based aliases not already covered by modelUid field
-_lookup.set('claude-sonnet-4-6-1m', 'claude-sonnet-4.6-1m');
-_lookup.set('claude-sonnet-4-6-thinking-1m', 'claude-sonnet-4.6-thinking-1m');
-_lookup.set('gpt-5-4-none', 'gpt-5.4-none');
-_lookup.set('gpt-5-4-low', 'gpt-5.4-low');
-_lookup.set('gpt-5-4-medium', 'gpt-5.4-medium');
-_lookup.set('gpt-5-4-high', 'gpt-5.4-high');
-_lookup.set('gpt-5-4-xhigh', 'gpt-5.4-xhigh');
-_lookup.set('gpt-5-4-mini-low', 'gpt-5.4-mini-low');
-_lookup.set('gpt-5-4-mini-medium', 'gpt-5.4-mini-medium');
-_lookup.set('gpt-5-4-mini-high', 'gpt-5.4-mini-high');
-_lookup.set('gpt-5-4-mini-xhigh', 'gpt-5.4-mini-xhigh');
+registerAlias(_lookup, 'MODEL_CLAUDE_4_5_SONNET', 'claude-4.5-sonnet');
+registerAlias(_lookup, 'MODEL_CLAUDE_4_5_SONNET_THINKING', 'claude-4.5-sonnet-thinking');
+registerAlias(_lookup, 'gpt-5-4-none', 'gpt-5.4-none');
+registerAlias(_lookup, 'gpt-5-4-low', 'gpt-5.4-low');
+registerAlias(_lookup, 'gpt-5-4-medium', 'gpt-5.4-medium');
+registerAlias(_lookup, 'gpt-5-4-high', 'gpt-5.4-high');
+registerAlias(_lookup, 'gpt-5-4-xhigh', 'gpt-5.4-xhigh');
+registerAlias(_lookup, 'gpt-5-4-mini-low', 'gpt-5.4-mini-low');
+registerAlias(_lookup, 'gpt-5-4-mini-medium', 'gpt-5.4-mini-medium');
+registerAlias(_lookup, 'gpt-5-4-mini-high', 'gpt-5.4-mini-high');
+registerAlias(_lookup, 'gpt-5-4-mini-xhigh', 'gpt-5.4-mini-xhigh');
+for (const [alias, canonical] of Object.entries(ANTHROPIC_COMPAT_ALIASES)) {
+  registerAlias(_lookup, alias, canonical);
+}
 
 /** Resolve user model name → internal model key. */
 export function resolveModel(name) {
   if (!name) return null;
-  return _lookup.get(name) || _lookup.get(name.toLowerCase()) || name;
+  const normalized = normalizeRequestedModelName(name);
+  const direct = _lookup.get(normalized) || _lookup.get(normalized.toLowerCase());
+  if (direct) return MODELS[direct] ? direct : resolveAnthropicFamilyFallback(direct) || direct;
+  return resolveAnthropicFamilyFallback(normalized) || normalized;
 }
 
 /** Get model info including enum and uid. */
@@ -230,6 +335,13 @@ export const MODEL_TIER_ACCESS = {
   expired: [],
 };
 
+// External compatibility aliases that should be exposed in /v1/models.
+// These aliases are already accepted by resolveModel(); listing them avoids
+// client-side model validation failures in tools that trust /v1/models.
+const MODEL_LIST_ALIASES = {
+  ...ANTHROPIC_COMPAT_ALIASES,
+};
+
 /** Models a given tier is entitled to. */
 export function getTierModels(tier) {
   return MODEL_TIER_ACCESS[tier] || MODEL_TIER_ACCESS.unknown;
@@ -238,13 +350,28 @@ export function getTierModels(tier) {
 /** List all models in OpenAI /v1/models format. */
 export function listModels() {
   const ts = Math.floor(Date.now() / 1000);
-  return Object.entries(MODELS).map(([id, info]) => ({
+  const models = Object.entries(MODELS).map(([id, info]) => ({
     id: info.name,
     object: 'model',
     created: ts,
     owned_by: info.provider,
     _windsurf_id: id,
   }));
+
+  for (const [alias, canonical] of Object.entries(MODEL_LIST_ALIASES)) {
+    const info = MODELS[canonical];
+    if (!info) continue;
+    models.push({
+      id: alias,
+      object: 'model',
+      created: ts,
+      owned_by: info.provider,
+      _windsurf_id: canonical,
+      _alias_for: info.name,
+    });
+  }
+
+  return models;
 }
 
 /**

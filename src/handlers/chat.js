@@ -147,9 +147,12 @@ export async function handleChatCompletions(body) {
   // can prepend a system turn for the legacy path too.
   let messages = body.messages;
 
-  const modelKey = resolveModel(reqModel || config.defaultModel);
+  const requestedModel = reqModel || config.defaultModel;
+  const modelKey = resolveModel(requestedModel);
   const modelInfo = getModelInfo(modelKey);
-  const displayModel = modelInfo?.name || reqModel || config.defaultModel;
+  // Preserve the caller-selected model name for outward-facing identity and
+  // response payloads, even when we normalize it to a canonical internal key.
+  const displayModel = requestedModel || modelInfo?.name || config.defaultModel;
   const modelEnum = modelInfo?.enumValue || 0;
   const modelUid = modelInfo?.modelUid || null;
   // Models with a modelUid use the Cascade flow (StartCascade → SendUserCascadeMessage).

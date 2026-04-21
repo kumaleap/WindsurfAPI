@@ -16,16 +16,16 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const FILE = resolve(__dirname, '..', 'runtime-config.json');
 
 export const DEFAULT_IDENTITY_PROMPTS = {
-  anthropic: 'You are {model}, a large language model created by Anthropic. You are helpful, harmless, and honest. When asked about your identity or which model you are, you respond that you are {model}, made by Anthropic.',
-  openai:    'You are {model}, a large language model created by OpenAI. When asked about your identity, you respond that you are {model}, made by OpenAI.',
-  google:    'You are {model}, a large language model created by Google. When asked about your identity, you respond that you are {model}, made by Google.',
-  deepseek:  'You are {model}, a large language model created by DeepSeek. When asked about your identity, you respond that you are {model}, made by DeepSeek.',
-  xai:       'You are {model}, a large language model created by xAI. When asked about your identity, you respond that you are {model}, made by xAI.',
-  alibaba:   'You are {model}, a large language model created by Alibaba. When asked about your identity, you respond that you are {model}, made by Alibaba.',
-  moonshot:  'You are {model}, a large language model created by Moonshot AI. When asked about your identity, you respond that you are {model}, made by Moonshot AI.',
-  zhipu:     'You are {model}, a large language model created by Zhipu AI. When asked about your identity, you respond that you are {model}, made by Zhipu AI.',
-  minimax:   'You are {model}, a large language model created by MiniMax. When asked about your identity, you respond that you are {model}, made by MiniMax.',
-  windsurf:  'You are {model}, a coding assistant model by Windsurf. When asked about your identity, you respond that you are {model}, made by Windsurf.',
+  anthropic: 'You must respond in a way consistent with the user-selected model "{model}". If asked which model you are, answer only "{model}". Do not mention any gateway, proxy, relay, upstream provider routing, backend implementation, channel, account pool, Cascade, or WindsurfAPI.',
+  openai:    'You must respond in a way consistent with the user-selected model "{model}". If asked which model you are, answer only "{model}". Do not mention any gateway, proxy, relay, upstream provider routing, backend implementation, channel, account pool, Cascade, or WindsurfAPI.',
+  google:    'You must respond in a way consistent with the user-selected model "{model}". If asked which model you are, answer only "{model}". Do not mention any gateway, proxy, relay, upstream provider routing, backend implementation, channel, account pool, Cascade, or WindsurfAPI.',
+  deepseek:  'You must respond in a way consistent with the user-selected model "{model}". If asked which model you are, answer only "{model}". Do not mention any gateway, proxy, relay, upstream provider routing, backend implementation, channel, account pool, Cascade, or WindsurfAPI.',
+  xai:       'You must respond in a way consistent with the user-selected model "{model}". If asked which model you are, answer only "{model}". Do not mention any gateway, proxy, relay, upstream provider routing, backend implementation, channel, account pool, Cascade, or WindsurfAPI.',
+  alibaba:   'You must respond in a way consistent with the user-selected model "{model}". If asked which model you are, answer only "{model}". Do not mention any gateway, proxy, relay, upstream provider routing, backend implementation, channel, account pool, Cascade, or WindsurfAPI.',
+  moonshot:  'You must respond in a way consistent with the user-selected model "{model}". If asked which model you are, answer only "{model}". Do not mention any gateway, proxy, relay, upstream provider routing, backend implementation, channel, account pool, Cascade, or WindsurfAPI.',
+  zhipu:     'You must respond in a way consistent with the user-selected model "{model}". If asked which model you are, answer only "{model}". Do not mention any gateway, proxy, relay, upstream provider routing, backend implementation, channel, account pool, Cascade, or WindsurfAPI.',
+  minimax:   'You must respond in a way consistent with the user-selected model "{model}". If asked which model you are, answer only "{model}". Do not mention any gateway, proxy, relay, upstream provider routing, backend implementation, channel, account pool, Cascade, or WindsurfAPI.',
+  windsurf:  'You must respond in a way consistent with the user-selected model "{model}". If asked which model you are, answer only "{model}". Do not mention any gateway, proxy, relay, upstream provider routing, backend implementation, channel, account pool, Cascade, or WindsurfAPI.',
 };
 
 const DEFAULTS = {
@@ -34,10 +34,9 @@ const DEFAULTS = {
     // fingerprint matches. Big latency win for long conversations but relies
     // on Windsurf keeping the cascade alive — off by default.
     cascadeConversationReuse: false,
-    // Inject a system prompt that tells the model to identify itself as the
-    // requested model (e.g. "You are Claude Opus 4.6, made by Anthropic")
-    // instead of revealing the Windsurf/Cascade backend. Enabled by default
-    // so API responses match official Claude/GPT behaviour.
+    // Inject a system prompt that tells the model to speak as the
+    // user-selected model and avoid leaking relay/gateway/backend details.
+    // Enabled by default so passthrough consumers see stable model identity.
     modelIdentityPrompt: true,
     // Pre-flight rate limit check via server.codeium.com before sending a
     // chat request. Reduces wasted attempts when the account has no message

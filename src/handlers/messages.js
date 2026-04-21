@@ -19,6 +19,10 @@ function genMsgId() {
   return 'msg_' + randomUUID().replace(/-/g, '').slice(0, 24);
 }
 
+function estimateCharTokens(chars) {
+  return Math.max(1, Math.ceil(Math.max(0, chars) / 4));
+}
+
 // ─── Anthropic → OpenAI request translation ──────────────────
 
 function anthropicToOpenAI(body) {
@@ -89,6 +93,48 @@ function anthropicToOpenAI(body) {
     ...(body.top_p != null ? { top_p: body.top_p } : {}),
     ...(body.stop_sequences ? { stop: body.stop_sequences } : {}),
   };
+}
+
+function estimateCountTokens(body) {
+  const openaiBody = anthropicToOpenAI(body || {});
+  let chars = 0;
+
+  for (const message of openaiBody.messages || []) {
+    chars += 12; // per-message framing overhead
+    if (typeof message?.content === 'string') chars += message.content.length;
+    else if (Array.isArray(message?.content)) {
+      for (const part of message.content) {
+        if (typeof part?.text === 'string') chars += part.text.length;
+      }
+    }
+    if (Array.isArray(message?.tool_calls)) {
+      for (const call of message.tool_calls) {
+        chars += (call.id || '').length;
+        chars += (call.function?.name || '').length;
+        chars += (call.function?.arguments || '').length;
+      }
+    }
+    if (typeof message?.tool_call_id === 'string') chars += message.tool_call_id.length;
+  }
+
+  for (const tool of openaiBody.tools || []) {
+    chars += 24; // tool schema framing overhead
+    chars += (tool.function?.name || '').length;
+    chars += (tool.function?.description || '').length;
+    try {
+      chars += JSON.stringify(tool.function?.parameters || {}).length;
+    } catch {
+      chars += 0;
+    }
+  }
+
+  if (body?.metadata && typeof body.metadata === 'object') {
+    try { chars += JSON.stringify(body.metadata).length; } catch {}
+  }
+
+  // Keep the estimate conservative so client-side budget checks don't reject
+  // valid requests simply because our local approximation undercounted.
+  return estimateCharTokens(chars + 32);
 }
 
 // ─── OpenAI → Anthropic non-stream response translation ──────
@@ -426,6 +472,15 @@ export async function handleMessages(body) {
       }
 
       if (!realRes.writableEnded) realRes.end();
+    },
+  };
+}
+
+export function handleCountTokens(body) {
+  return {
+    status: 200,
+    body: {
+      input_tokens: estimateCountTokens(body),
     },
   };
 }
