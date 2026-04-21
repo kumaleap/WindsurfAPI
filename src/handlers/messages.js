@@ -14,6 +14,10 @@
 import { randomUUID } from 'crypto';
 import { handleChatCompletions } from './chat.js';
 import { log } from '../config.js';
+import { resolveThinkingModel } from '../models.js';
+
+const MESSAGES_HEARTBEAT_MS = 15_000;
+const LEGACY_STREAM_ERROR_RE = /^\s*\[Error:\s*([\s\S]+?)\]\s*$/;
 
 function genMsgId() {
   return 'msg_' + randomUUID().replace(/-/g, '').slice(0, 24);
@@ -21,6 +25,44 @@ function genMsgId() {
 
 function estimateCharTokens(chars) {
   return Math.max(1, Math.ceil(Math.max(0, chars) / 4));
+}
+
+function shouldPreferThinking(body) {
+  const thinking = body?.thinking;
+  if (!thinking) return false;
+  if (thinking === true) return true;
+  if (typeof thinking === 'string') {
+    const lowered = thinking.trim().toLowerCase();
+    return lowered === 'enabled' || lowered === 'on' || lowered === 'true';
+  }
+  if (typeof thinking !== 'object') return false;
+  if (thinking.enabled === true) return true;
+  if (typeof thinking.type === 'string' && thinking.type.trim().toLowerCase() === 'enabled') return true;
+  if (typeof thinking.budget_tokens === 'number' && thinking.budget_tokens > 0) return true;
+  return false;
+}
+
+function resolveAnthropicModel(body) {
+  const requested = body?.model || 'claude-sonnet-4.6';
+  if (!shouldPreferThinking(body)) return requested;
+  return resolveThinkingModel(requested) || requested;
+}
+
+function mapErrorType(type) {
+  switch (type) {
+    case 'invalid_request':
+    case 'invalid_request_error':
+      return 'invalid_request_error';
+    case 'auth_error':
+      return 'authentication_error';
+    case 'model_not_available':
+    case 'model_not_entitled':
+      return 'permission_error';
+    case 'rate_limit_exceeded':
+      return 'rate_limit_error';
+    default:
+      return 'api_error';
+  }
 }
 
 // ─── Anthropic → OpenAI request translation ──────────────────
@@ -84,7 +126,7 @@ function anthropicToOpenAI(body) {
     },
   }));
   return {
-    model: body.model || 'claude-sonnet-4.6',
+    model: resolveAnthropicModel(body),
     messages,
     max_tokens: body.max_tokens || 8192,
     stream: !!body.stream,
@@ -195,13 +237,19 @@ class AnthropicStreamTranslator {
     this.stopReason = 'end_turn';
     this.messageStarted = false;
     this.messageStopped = false;
+    this.hardErrored = false;
     this.pendingSseBuf = '';
+    this.visibleBlocks = 0;
   }
 
   send(event, data) {
     if (!this.res.writableEnded) {
       this.res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     }
+  }
+
+  sendPing() {
+    this.send('ping', { type: 'ping' });
   }
 
   startMessage() {
@@ -225,6 +273,7 @@ class AnthropicStreamTranslator {
   startBlock(type, extra = {}) {
     this.closeCurrentBlock();
     this.current = { type, index: this.blockIndex };
+    this.visibleBlocks++;
     let content_block;
     if (type === 'text') content_block = { type: 'text', text: '' };
     else if (type === 'thinking') content_block = { type: 'thinking', thinking: '' };
@@ -287,10 +336,21 @@ class AnthropicStreamTranslator {
   }
 
   processChunk(chunk) {
+    if (chunk?.error?.message) {
+      this.emitError(chunk.error.message, chunk.error.type);
+      return;
+    }
     this.startMessage();
     const choice = chunk.choices?.[0];
     if (choice) {
       const delta = choice.delta || {};
+      if (!this.visibleBlocks && typeof delta.content === 'string') {
+        const legacyMatch = delta.content.match(LEGACY_STREAM_ERROR_RE);
+        if (legacyMatch && choice.finish_reason === 'stop') {
+          this.emitError(legacyMatch[1], 'api_error');
+          return;
+        }
+      }
       if (delta.reasoning_content) this.emitThinkingDelta(delta.reasoning_content);
       if (delta.content) this.emitTextDelta(delta.content);
       if (Array.isArray(delta.tool_calls)) {
@@ -305,7 +365,7 @@ class AnthropicStreamTranslator {
   }
 
   finish() {
-    if (this.messageStopped) return;
+    if (this.messageStopped || this.hardErrored) return;
     this.messageStopped = true;
     this.closeCurrentBlock();
     const u = this.finalUsage || {};
@@ -322,6 +382,19 @@ class AnthropicStreamTranslator {
     this.send('message_stop', { type: 'message_stop' });
   }
 
+  emitError(message, type = 'api_error') {
+    if (this.messageStopped || this.hardErrored) return;
+    this.hardErrored = true;
+    this.closeCurrentBlock();
+    this.send('error', {
+      type: 'error',
+      error: {
+        type: mapErrorType(type),
+        message,
+      },
+    });
+  }
+
   // SSE parser — handleChatCompletions writes `data: {...}\n\n` frames;
   // accumulate and flush each complete frame as a translated event.
   feed(rawChunk) {
@@ -330,6 +403,12 @@ class AnthropicStreamTranslator {
     while ((idx = this.pendingSseBuf.indexOf('\n\n')) !== -1) {
       const frame = this.pendingSseBuf.slice(0, idx);
       this.pendingSseBuf = this.pendingSseBuf.slice(idx + 2);
+      const trimmed = frame.trim();
+      if (!trimmed) continue;
+      if (trimmed.startsWith(':')) {
+        this.sendPing();
+        continue;
+      }
       const lines = frame.split('\n');
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
@@ -413,7 +492,7 @@ export async function handleMessages(body) {
         body: {
           type: 'error',
           error: {
-            type: result.body?.error?.type || 'api_error',
+            type: mapErrorType(result.body?.error?.type),
             message: result.body?.error?.message || 'Unknown error',
           },
         },
@@ -434,7 +513,7 @@ export async function handleMessages(body) {
       body: {
         type: 'error',
         error: {
-          type: streamResult.body?.error?.type || 'api_error',
+          type: mapErrorType(streamResult.body?.error?.type),
           message: streamResult.body?.error?.message || 'Upstream error',
         },
       },
@@ -453,6 +532,18 @@ export async function handleMessages(body) {
     async handler(realRes) {
       const translator = new AnthropicStreamTranslator(realRes, msgId, requestedModel);
       const captureRes = createCaptureRes(translator);
+      const socket = realRes.socket;
+      if (socket) {
+        socket.setNoDelay?.(true);
+        socket.setKeepAlive?.(true, 30_000);
+      }
+      realRes.flushHeaders?.();
+      translator.sendPing();
+      const heartbeat = setInterval(() => {
+        if (!realRes.writableEnded) translator.sendPing();
+      }, MESSAGES_HEARTBEAT_MS);
+      const stopHeartbeat = () => clearInterval(heartbeat);
+      realRes.on('close', stopHeartbeat);
 
       // Forward client disconnect so the upstream cascade is cancelled.
       // We don't call captureRes.end() here — that would set writableEnded=true
@@ -465,10 +556,10 @@ export async function handleMessages(body) {
         await streamResult.handler(captureRes);
       } catch (e) {
         log.error(`Messages stream error: ${e.message}`);
-        if (!translator.messageStarted) {
-          translator.startMessage();
-        }
+        if (!translator.messageStarted) translator.emitError(e.message, 'api_error');
         translator.finish();
+      } finally {
+        stopHeartbeat();
       }
 
       if (!realRes.writableEnded) realRes.end();

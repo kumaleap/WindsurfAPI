@@ -73,6 +73,9 @@ export class PathSanitizeStream {
 
   feed(delta) {
     if (!delta) return '';
+    // Fast path for the overwhelmingly common case: ordinary text chunks with
+    // no path marker and no buffered suffix from a prior chunk.
+    if (!this.buffer && !delta.includes('/')) return delta;
     this.buffer += delta;
     const cut = this._safeCutPoint();
     if (cut === 0) return '';

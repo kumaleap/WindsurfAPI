@@ -11,6 +11,7 @@ import { getLsFor, ensureLs } from '../langserver.js';
 import { config, log } from '../config.js';
 import { recordRequest } from '../dashboard/stats.js';
 import { isModelAllowed } from '../dashboard/model-access.js';
+import { newRequestId, withCtx } from '../dashboard/logger.js';
 import { cacheKey, cacheGet, cacheSet } from '../cache.js';
 import { isExperimentalEnabled, getIdentityPromptFor } from '../runtime-config.js';
 import { checkMessageRateLimit } from '../windsurf-api.js';
@@ -27,6 +28,47 @@ import { sanitizeText, PathSanitizeStream } from '../sanitize.js';
 const HEARTBEAT_MS = 15_000;
 const QUEUE_RETRY_MS = 1_000;
 const QUEUE_MAX_WAIT_MS = 30_000;
+const STREAM_PRELUDE_COMMIT_CHARS = 96;
+const STREAM_PRELUDE_COMMIT_MS = 900;
+const STREAM_THINKING_COMMIT_CHARS = 24;
+const STREAM_THINKING_COMMIT_MS = 220;
+const STREAM_FOLLOWUP_COMMIT_CHARS = 56;
+const STREAM_FOLLOWUP_COMMIT_MS = 180;
+const STREAM_FOLLOWUP_BOUNDARY_CHARS = 24;
+const STREAM_FOLLOWUP_BOUNDARY_MS = 90;
+const STREAM_FOLLOWUP_THINKING_COMMIT_CHARS = 20;
+const STREAM_FOLLOWUP_THINKING_COMMIT_MS = 120;
+
+function endsAtNaturalBoundary(text) {
+  if (!text) return false;
+  const tail = text.slice(-6);
+  return /(?:\r?\n\s*$|[.!?。！？:：;；]\s*$|[)\]」』】]\s*$)/.test(tail);
+}
+
+function summarizeStreamMetrics(metrics) {
+  return {
+    attempts: metrics.attempts,
+    retriesBeforeCommit: metrics.retriesBeforeCommit,
+    committedTextChars: metrics.committedTextChars,
+    committedThinkingChars: metrics.committedThinkingChars,
+    committedToolCalls: metrics.committedToolCalls,
+    committedChunks: metrics.committedChunks,
+    firstVisibleMs: metrics.firstVisibleAt ? metrics.firstVisibleAt - metrics.startedAt : null,
+    firstTextMs: metrics.firstTextAt ? metrics.firstTextAt - metrics.startedAt : null,
+    firstThinkingMs: metrics.firstThinkingAt ? metrics.firstThinkingAt - metrics.startedAt : null,
+    lastErrorType: metrics.lastErrorType,
+    finishedBy: metrics.finishedBy,
+  };
+}
+
+function classifyStreamError(err) {
+  const msg = err?.message || '';
+  if (/(rate limit|rate_limit|too many requests|quota)/i.test(msg) || err?.isRateLimit) return 'rate_limit';
+  if (/(internal error occurred.*error id)/i.test(msg)) return 'internal_error';
+  if (err?.isModelError) return 'model_error';
+  if (msg) return 'upstream_error';
+  return 'unknown';
+}
 
 // ── Model identity prompt ──────────────────────────────────
 // Templates live in runtime-config (editable from the dashboard). Use {model}
@@ -514,10 +556,12 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
       'X-Accel-Buffering': 'no',
     },
     async handler(res) {
+      const requestId = newRequestId();
+      const slog = withCtx({ requestId, route: 'chat.stream', model, modelKey });
       const abortController = new AbortController();
       res.on('close', () => {
         if (!res.writableEnded) {
-          log.info('Client disconnected mid-stream, aborting upstream');
+          slog.info('Client disconnected mid-stream, aborting upstream');
           abortController.abort();
         }
       });
@@ -525,20 +569,18 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
         if (!res.writableEnded) res.write(`data: ${JSON.stringify(data)}\n\n`);
       };
 
-      // SSE heartbeat: keep the TCP/HTTP connection alive through any silent
-      // period (LS warmup, Cascade "thinking", queue wait). `:` prefix is a
-      // comment line per the SSE spec — clients ignore it, intermediaries see
-      // bytes flowing, idle timers get reset.
       const heartbeat = setInterval(() => {
         if (!res.writableEnded) res.write(': ping\n\n');
       }, HEARTBEAT_MS);
       const stopHeartbeat = () => clearInterval(heartbeat);
       res.on('close', stopHeartbeat);
 
-      // ── Cache hit: replay stored response as a fake stream ──
       const cached = cacheGet(ckey);
       if (cached) {
-        log.info(`Chat: cache HIT model=${model} flow=stream`);
+        slog.info('Chat: cache HIT stream response', {
+          cachedTextChars: cached.text?.length || 0,
+          cachedThinkingChars: cached.thinking?.length || 0,
+        });
         recordRequest(model, true, 0, null);
         try {
           send({ id, object: 'chat.completion.chunk', created, model,
@@ -562,9 +604,29 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
       }
 
       const startTime = Date.now();
+      const streamMetrics = {
+        startedAt: startTime,
+        attempts: 0,
+        retriesBeforeCommit: 0,
+        committedTextChars: 0,
+        committedThinkingChars: 0,
+        committedToolCalls: 0,
+        committedChunks: 0,
+        firstVisibleAt: 0,
+        firstTextAt: 0,
+        firstThinkingAt: 0,
+        lastErrorType: null,
+        finishedBy: 'unknown',
+      };
+      slog.info('Stream started', {
+        turns: Array.isArray(messages) ? messages.length : 0,
+        useCascade,
+        emulateTools,
+        cacheKey: !!ckey,
+      });
       const tried = [];
-      let hadSuccess = false;
       let rolePrinted = false;
+      let committedOutput = false;
       let currentApiKey = null;
       let lastErr = null;
       // Dynamic: try every active account in the pool (capped at 10) so a
@@ -574,46 +636,62 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
   // even though they would have worked (issue #5).
   const maxAttempts = Math.min(10, Math.max(3, getAccountList().filter(a => a.status === 'active').length));
 
-      // Accumulate chunks so we can cache a successful response at the end.
       let accText = '';
       let accThinking = '';
 
-      // Cascade conversation pool (experimental, stream path) — bypassed in
-      // tool-emulation mode because the fingerprint can't collapse turns
-      // whose bodies carry <tool_call>/<tool_result> markup.
       const reuseEnabled = useCascade && !emulateTools && isExperimentalEnabled('cascadeConversationReuse');
       const fpBefore = reuseEnabled ? fingerprintBefore(messages) : null;
       let reuseEntry = reuseEnabled ? poolCheckout(fpBefore) : null;
       if (reuseEntry) log.info(`Chat: cascade reuse HIT cascadeId=${reuseEntry.cascadeId.slice(0, 8)}… stream model=${model}`);
 
-      // Always strip <tool_call>/<tool_result> blocks in Cascade mode.
-      // In emulation mode, parsed calls are emitted as OpenAI tool_calls.
-      // In non-emulation mode, blocks are silently stripped (defense-in-depth
-      // against Cascade's system prompt inducing tool markup).
-      const toolParser = useCascade ? new ToolCallStreamParser() : null;
       const collectedToolCalls = [];
 
-      // Streaming path sanitizers. Every text/thinking delta flows through a
-      // PathSanitizeStream before leaving the server so /tmp/windsurf-workspace,
-      // /opt/windsurf and /root/WindsurfAPI literals can never slip out even
-      // if a path straddles a chunk boundary. See src/sanitize.js.
-      const pathStreamText = new PathSanitizeStream();
-      const pathStreamThinking = new PathSanitizeStream();
+      const noteVisibleCommit = (kind, size = 0) => {
+        const now = Date.now();
+        if (!streamMetrics.firstVisibleAt) streamMetrics.firstVisibleAt = now;
+        streamMetrics.committedChunks++;
+        if (kind === 'text') {
+          if (!streamMetrics.firstTextAt) streamMetrics.firstTextAt = now;
+          streamMetrics.committedTextChars += size;
+        } else if (kind === 'thinking') {
+          if (!streamMetrics.firstThinkingAt) streamMetrics.firstThinkingAt = now;
+          streamMetrics.committedThinkingChars += size;
+        } else if (kind === 'tool') {
+          streamMetrics.committedToolCalls += 1;
+        }
+      };
+
+      const ensureRoleChunk = () => {
+        if (rolePrinted) return;
+        rolePrinted = true;
+        send({ id, object: 'chat.completion.chunk', created, model,
+          choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
+      };
 
       const emitContent = (clean) => {
         if (!clean) return;
+        ensureRoleChunk();
+        committedOutput = true;
+        noteVisibleCommit('text', clean.length);
         accText += clean;
         send({ id, object: 'chat.completion.chunk', created, model,
           choices: [{ index: 0, delta: { content: clean }, finish_reason: null }] });
       };
+
       const emitThinking = (clean) => {
         if (!clean) return;
+        ensureRoleChunk();
+        committedOutput = true;
+        noteVisibleCommit('thinking', clean.length);
         accThinking += clean;
         send({ id, object: 'chat.completion.chunk', created, model,
           choices: [{ index: 0, delta: { reasoning_content: clean }, finish_reason: null }] });
       };
 
       const emitToolCallDelta = (tc, idx) => {
+        ensureRoleChunk();
+        committedOutput = true;
+        noteVisibleCommit('tool');
         send({ id, object: 'chat.completion.chunk', created, model,
           choices: [{ index: 0, delta: {
             tool_calls: [{
@@ -625,44 +703,96 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
           }, finish_reason: null }] });
       };
 
-      const onChunk = (chunk) => {
-        if (!rolePrinted) {
-          rolePrinted = true;
-          send({ id, object: 'chat.completion.chunk', created, model,
-            choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
-        }
-        hadSuccess = true;
-
-        if (chunk.text) {
-          // Pipeline for text deltas:
-          //   raw chunk  →  ToolCallStreamParser (strip <tool_call> blocks)
-          //              →  PathSanitizeStream   (scrub server paths)
-          //              →  client
-          let safeText = chunk.text;
-          if (toolParser) {
-            const { text: safe, toolCalls: done } = toolParser.feed(chunk.text);
-            safeText = safe;
-            // Only emit tool_call deltas when emulating — otherwise the
-            // parsed calls came from Cascade's built-in tools and are
-            // silently discarded.
-            if (emulateTools) {
-              for (const tc of done) {
-                const idx = collectedToolCalls.length;
-                collectedToolCalls.push(tc);
-                emitToolCallDelta(tc, idx);
-              }
-            }
-          }
-          if (safeText) emitContent(pathStreamText.feed(safeText));
-        }
-        if (chunk.thinking) {
-          emitThinking(pathStreamThinking.feed(chunk.thinking));
-        }
-      };
-
       try {
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
           if (abortController.signal.aborted) return;
+          streamMetrics.attempts = attempt + 1;
+
+          const toolParser = useCascade ? new ToolCallStreamParser() : null;
+          const pathStreamText = new PathSanitizeStream();
+          const pathStreamThinking = new PathSanitizeStream();
+          const attemptToolCalls = [];
+          const staged = [];
+          let stagedChars = 0;
+          let stagedFirstAt = 0;
+          let attemptSawProgress = false;
+
+          const stageChunk = (entry) => {
+            if (!entry) return;
+            staged.push(entry);
+            stagedChars += entry.visibleChars || 0;
+            if (!stagedFirstAt) stagedFirstAt = Date.now();
+          };
+
+          const flushPrelude = (force = false) => {
+            if (!staged.length) return;
+            const ageMs = stagedFirstAt ? Date.now() - stagedFirstAt : 0;
+            const hasToolCall = staged.some((entry) => entry.kind === 'tool');
+            const hasThinking = staged.some((entry) => entry.kind === 'thinking');
+            const onlyText = staged.every((entry) => entry.kind === 'text');
+            const lastText = onlyText
+              ? staged.reduce((tail, entry) => entry.value || tail, '')
+              : '';
+            const phaseChars = committedOutput ? STREAM_FOLLOWUP_COMMIT_CHARS : STREAM_PRELUDE_COMMIT_CHARS;
+            const phaseMs = committedOutput ? STREAM_FOLLOWUP_COMMIT_MS : STREAM_PRELUDE_COMMIT_MS;
+            const thinkingChars = committedOutput ? STREAM_FOLLOWUP_THINKING_COMMIT_CHARS : STREAM_THINKING_COMMIT_CHARS;
+            const thinkingMs = committedOutput ? STREAM_FOLLOWUP_THINKING_COMMIT_MS : STREAM_THINKING_COMMIT_MS;
+            const boundaryFlush = committedOutput
+              && onlyText
+              && endsAtNaturalBoundary(lastText)
+              && (stagedChars >= STREAM_FOLLOWUP_BOUNDARY_CHARS || ageMs >= STREAM_FOLLOWUP_BOUNDARY_MS);
+            const shouldFlush = force
+              || hasToolCall
+              || (hasThinking && (stagedChars >= thinkingChars || ageMs >= thinkingMs))
+              || boundaryFlush
+              || stagedChars >= phaseChars
+              || ageMs >= phaseMs;
+            if (!shouldFlush) return;
+
+            for (const entry of staged.splice(0)) {
+              if (entry.kind === 'text') emitContent(entry.value);
+              else if (entry.kind === 'thinking') emitThinking(entry.value);
+              else if (entry.kind === 'tool') emitToolCallDelta(entry.value, entry.index);
+            }
+            stagedChars = 0;
+            stagedFirstAt = 0;
+          };
+
+          const onChunk = (chunk) => {
+            attemptSawProgress = true;
+
+            if (chunk.text) {
+              let safeText = chunk.text;
+              if (toolParser) {
+                const parserActive = emulateTools
+                  || !toolParser.isIdle()
+                  || chunk.text.includes('<');
+                if (parserActive) {
+                  const { text: safe, toolCalls: done } = toolParser.feed(chunk.text);
+                  safeText = safe;
+                  if (emulateTools) {
+                    for (const tc of done) {
+                      const idx = attemptToolCalls.length;
+                      attemptToolCalls.push(tc);
+                      stageChunk({ kind: 'tool', value: tc, index: idx, visibleChars: 1 });
+                    }
+                  }
+                }
+              }
+              if (safeText) {
+                const clean = pathStreamText.feed(safeText);
+                if (clean) stageChunk({ kind: 'text', value: clean, visibleChars: clean.length });
+              }
+            }
+
+            if (chunk.thinking) {
+              const clean = pathStreamThinking.feed(chunk.thinking);
+              if (clean) stageChunk({ kind: 'thinking', value: clean, visibleChars: clean.length });
+            }
+
+            flushPrelude(false);
+          };
+
           let acct = null;
           if (reuseEntry && attempt === 0) {
             acct = acquireAccountByKey(reuseEntry.apiKey, modelKey);
@@ -678,7 +808,6 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
           tried.push(acct.apiKey);
           currentApiKey = acct.apiKey;
 
-          // Pre-flight rate limit check (experimental)
           if (isExperimentalEnabled('preflightRateLimit')) {
             try {
               const px = getEffectiveProxy(acct.id) || null;
@@ -707,6 +836,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
           log.info(`Chat: model=${model} flow=${useCascade ? 'cascade' : 'legacy'} stream=true attempt=${attempt + 1} account=${acct.email} ls=${ls.port} turns=${(messages||[]).length} chars=${_msgCharsStream}${reuseEntry ? ' reuse=1' : ''}`);
           const client = new WindsurfClient(acct.apiKey, ls.port, ls.csrfToken);
           let cascadeResult = null;
+
           try {
             if (useCascade) {
               cascadeResult = await client.cascadeChat(cascadeMessages, modelEnum, modelUid, {
@@ -715,27 +845,33 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
             } else {
               await client.rawGetChatMessage(messages, modelEnum, modelUid, { onChunk });
             }
-            // Flush order matters:
-            //   1. ToolCallStreamParser tail → may produce more text deltas
-            //      (e.g., a dangling <tool_call> that never closed falls
-            //      through as literal text)
-            //   2. PathSanitizeStream tail (text) → scrubs anything the tool
-            //      parser held back AND anything we were holding ourselves
-            //   3. PathSanitizeStream tail (thinking)
+
             if (toolParser) {
               const tail = toolParser.flush();
-              if (tail.text) emitContent(pathStreamText.feed(tail.text));
+              if (tail.text) {
+                const clean = pathStreamText.feed(tail.text);
+                if (clean) stageChunk({ kind: 'text', value: clean, visibleChars: clean.length });
+              }
               if (emulateTools) {
                 for (const tc of tail.toolCalls) {
-                  const idx = collectedToolCalls.length;
-                  collectedToolCalls.push(tc);
-                  emitToolCallDelta(tc, idx);
+                  const idx = attemptToolCalls.length;
+                  attemptToolCalls.push(tc);
+                  stageChunk({ kind: 'tool', value: tc, index: idx, visibleChars: 1 });
                 }
               }
             }
-            emitContent(pathStreamText.flush());
-            emitThinking(pathStreamThinking.flush());
-            // Pool check-in on success (cascade only)
+
+            {
+              const clean = pathStreamText.flush();
+              if (clean) stageChunk({ kind: 'text', value: clean, visibleChars: clean.length });
+            }
+            {
+              const clean = pathStreamThinking.flush();
+              if (clean) stageChunk({ kind: 'thinking', value: clean, visibleChars: clean.length });
+            }
+            flushPrelude(true);
+            for (const tc of attemptToolCalls) collectedToolCalls.push(tc);
+
             if (reuseEnabled && cascadeResult?.cascadeId && accText) {
               const fpAfter = fingerprintAfter(messages, accText);
               poolCheckin(fpAfter, {
@@ -746,23 +882,20 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
                 createdAt: reuseEntry?.createdAt,
               });
             }
-            // success
-            if (hadSuccess) reportSuccess(currentApiKey);
+
+            if (attemptSawProgress || accText || accThinking || collectedToolCalls.length) {
+              reportSuccess(currentApiKey);
+            }
             updateCapability(currentApiKey, modelKey, true, 'success');
             recordRequest(model, true, Date.now() - startTime, currentApiKey);
-            if (!rolePrinted) {
-              send({ id, object: 'chat.completion.chunk', created, model,
-                choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
-            }
+            if (!rolePrinted) ensureRoleChunk();
+
             const finalReason = collectedToolCalls.length ? 'tool_calls' : 'stop';
+            streamMetrics.finishedBy = finalReason;
             const finalUsage = buildUsageBody(cascadeResult?.usage || null, messages, accText, accThinking);
             send({ id, object: 'chat.completion.chunk', created, model,
               choices: [{ index: 0, delta: {}, finish_reason: finalReason }],
               usage: finalUsage });
-            // OpenAI-compat: terminal usage chunk (stream_options.include_usage
-            // convention — empty choices[] + usage). Prefer Cascade's own
-            // CortexStepMetadata.model_usage numbers when present, fall back
-            // to the local chars/4 estimator. See buildUsageBody().
             {
               const usage = buildUsageBody(cascadeResult?.usage || null, messages, accText, accThinking);
               send({ id, object: 'chat.completion.chunk', created, model,
@@ -772,45 +905,98 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
             if (ckey && !collectedToolCalls.length && (accText || accThinking)) {
               cacheSet(ckey, { text: accText, thinking: accThinking });
             }
+            slog.info('Stream completed', {
+              ...summarizeStreamMetrics(streamMetrics),
+              usageSource: cascadeResult?.usage ? 'server' : 'estimated',
+              cacheStored: !!(ckey && !collectedToolCalls.length && (accText || accThinking)),
+              textChars: accText.length,
+              thinkingChars: accThinking.length,
+              toolCalls: collectedToolCalls.length,
+            });
             return;
           } catch (err) {
             lastErr = err;
-            reuseEntry = null; // don't try to reuse on retry
+            reuseEntry = null;
             const isAuthFail = /unauthenticated|invalid api key|invalid_grant|permission_denied.*account/i.test(err.message);
             const isRateLimit = /rate limit|rate_limit|too many requests|quota/i.test(err.message);
             const isInternal = /internal error occurred.*error id/i.test(err.message);
+            const errorType = classifyStreamError(err);
+            streamMetrics.lastErrorType = errorType;
             if (isAuthFail) reportError(currentApiKey);
             if (isRateLimit) { markRateLimited(currentApiKey, 5 * 60 * 1000, modelKey); err.isRateLimit = true; err.isModelError = true; }
             if (isInternal) { reportInternalError(currentApiKey); err.isModelError = true; }
             if (err.isModelError && !isRateLimit && !isInternal) {
               updateCapability(currentApiKey, modelKey, false, 'model_error');
             }
-            // Retry only if nothing has been streamed yet AND it's a retryable error
-            if (!hadSuccess && (err.isModelError || isRateLimit)) {
+
+            if (!committedOutput && (err.isModelError || isRateLimit)) {
+              streamMetrics.retriesBeforeCommit++;
+              slog.warn('Retrying stream on next account before visible output', {
+                attempt: attempt + 1,
+                errorType,
+                error: sanitizeText(err.message),
+                sawUpstreamProgress: attemptSawProgress,
+              });
               const tag = isRateLimit ? 'rate_limit' : isInternal ? 'internal_error' : 'model_error';
               log.warn(`Account ${acct.email} failed (${tag}) on ${model}, trying next`);
               continue;
             }
+            slog.warn('Stopping stream retries after visible output or non-retryable error', {
+              attempt: attempt + 1,
+              errorType,
+              error: sanitizeText(err.message),
+              committedOutput,
+              sawUpstreamProgress: attemptSawProgress,
+            });
             break;
           }
         }
 
-        // All attempts failed
+        streamMetrics.finishedBy = committedOutput ? 'graceful_partial_close' : 'failed_before_output';
         log.error('Stream error after retries:', lastErr?.message);
         recordRequest(model, false, Date.now() - startTime, currentApiKey);
         try {
-          if (!rolePrinted) {
+          if (committedOutput) {
+            if (!rolePrinted) ensureRoleChunk();
+            const usage = buildUsageBody(null, messages, accText, accThinking);
             send({ id, object: 'chat.completion.chunk', created, model,
-              choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
+              choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+              usage });
+            send({ id, object: 'chat.completion.chunk', created, model,
+              choices: [], usage });
+            res.write('data: [DONE]\n\n');
+            slog.warn('Stream closed after partial output', {
+              ...summarizeStreamMetrics(streamMetrics),
+              error: sanitizeText(lastErr?.message || ''),
+              textChars: accText.length,
+              thinkingChars: accThinking.length,
+              toolCalls: collectedToolCalls.length,
+            });
+          } else {
+            const rl = isAllRateLimited(modelKey);
+            const errType = rl.allLimited
+              ? 'rate_limit_exceeded'
+              : lastErr?.isModelError
+                ? 'model_not_available'
+                : 'upstream_error';
+            const errMsg = rl.allLimited
+              ? `${model} 所有账号均已达速率限制，请 ${Math.ceil(rl.retryAfterMs / 1000)} 秒后重试`
+              : sanitizeText(lastErr?.message || 'no accounts');
+            send({
+              error: {
+                message: errMsg,
+                type: errType,
+                ...(rl.allLimited ? { retry_after_ms: rl.retryAfterMs } : {}),
+              },
+            });
+            res.write('data: [DONE]\n\n');
+            slog.error('Stream failed before any visible output', {
+              ...summarizeStreamMetrics(streamMetrics),
+              errorType: errType,
+              allRateLimited: rl.allLimited,
+              error: sanitizeText(lastErr?.message || 'no accounts'),
+            });
           }
-          // Check if failure is due to all accounts being rate-limited
-          const rl = isAllRateLimited(modelKey);
-          const errMsg = rl.allLimited
-            ? `${model} 所有账号均已达速率限制，请 ${Math.ceil(rl.retryAfterMs / 1000)} 秒后重试`
-            : sanitizeText(lastErr?.message || 'no accounts');
-          send({ id, object: 'chat.completion.chunk', created, model,
-            choices: [{ index: 0, delta: { content: `\n[Error: ${errMsg}]` }, finish_reason: 'stop' }] });
-          res.write('data: [DONE]\n\n');
         } catch {}
         if (!res.writableEnded) res.end();
       } finally {

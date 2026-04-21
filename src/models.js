@@ -205,6 +205,18 @@ const ANTHROPIC_COMPAT_ALIASES = {
   'claude-instant-1.2': 'claude-4.5-haiku',
 };
 
+const THINKING_MODEL_PREFERENCES = {
+  'claude-sonnet-4.6': 'claude-sonnet-4.6-thinking',
+  'claude-sonnet-4.6-1m': 'claude-sonnet-4.6-thinking-1m',
+  'claude-opus-4.6': 'claude-opus-4.6-thinking',
+  'claude-4.5-sonnet': 'claude-4.5-sonnet-thinking',
+  'claude-4.5-opus': 'claude-4.5-opus-thinking',
+  'claude-4.1-opus': 'claude-4.1-opus-thinking',
+  'claude-4-sonnet': 'claude-4-sonnet-thinking',
+  'claude-4-opus': 'claude-4-opus-thinking',
+  'claude-3.7-sonnet': 'claude-3.7-sonnet-thinking',
+};
+
 function resolveAnthropicFamilyFallback(name) {
   const lower = normalizeRequestedModelName(name).toLowerCase();
   if (!lower.startsWith('claude')) return null;
@@ -297,6 +309,27 @@ export function resolveModel(name) {
   const direct = _lookup.get(normalized) || _lookup.get(normalized.toLowerCase());
   if (direct) return MODELS[direct] ? direct : resolveAnthropicFamilyFallback(direct) || direct;
   return resolveAnthropicFamilyFallback(normalized) || normalized;
+}
+
+/**
+ * Resolve a caller-selected model to a thinking-capable sibling when one is
+ * available. Returns null when no local catalog match exists.
+ */
+export function resolveThinkingModel(name) {
+  const canonical = resolveModel(name);
+  if (!canonical || !MODELS[canonical]) return null;
+  if (canonical.includes('-thinking')) return canonical;
+
+  const preferred = THINKING_MODEL_PREFERENCES[canonical];
+  if (preferred && MODELS[preferred]) return preferred;
+
+  const oneMVariant = canonical.replace(/-1m$/i, '-thinking-1m');
+  if (MODELS[oneMVariant]) return oneMVariant;
+
+  const genericVariant = `${canonical}-thinking`;
+  if (MODELS[genericVariant]) return genericVariant;
+
+  return canonical;
 }
 
 /** Get model info including enum and uid. */

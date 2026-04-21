@@ -26,6 +26,14 @@ import {
 
 const LS_SERVICE = '/exa.language_server_pb.LanguageServerService';
 
+function getCascadePollInterval({ sawText, totalThinking, msSinceGrowth }) {
+  if (!sawText && totalThinking === 0) return 100;
+  if (msSinceGrowth < 800) return 90;
+  if (msSinceGrowth < 2500) return 130;
+  if (msSinceGrowth < 7000) return 180;
+  return 240;
+}
+
 function contentToString(content) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
@@ -300,13 +308,14 @@ export class WindsurfClient {
       let lastGrowthAt = Date.now();
       let lastStepCount = 0;
       const maxWait = 180_000;
-      const pollInterval = 250;
-      const IDLE_GRACE_MS = 8_000;     // minimum time before idle-break allowed
+      let pollInterval = 100;
+      const IDLE_GRACE_MS = 10_000;    // minimum time before idle-break allowed
       // 25s no progress on any signal = genuine stall. Was 15s + text-only,
       // which misfired on long thinking phases and returned tiny "Let me…"
       // preambles as if they were complete replies.
-      const NO_GROWTH_STALL_MS = 25_000;
-      const STALL_RETRY_MIN_TEXT = 300;  // stalls shorter than this → retryable error, not partial success
+      const NO_GROWTH_STALL_MS = 40_000;
+      const NO_GROWTH_STALL_MS_WITH_THINKING = 50_000;
+      const STALL_RETRY_MIN_TEXT = 480;  // stalls shorter than this → retryable error, not partial success
       const startTime = Date.now();
       let endReason = 'unknown';
 
@@ -365,7 +374,10 @@ export class WindsurfClient {
           err.isModelError = true;
           throw err;
         }
-        if (sawText && lastStatus !== 1 && (Date.now() - lastGrowthAt) > NO_GROWTH_STALL_MS) {
+        const noGrowthStallMs = totalThinking > 0
+          ? NO_GROWTH_STALL_MS_WITH_THINKING
+          : NO_GROWTH_STALL_MS;
+        if (sawText && lastStatus !== 1 && (Date.now() - lastGrowthAt) > noGrowthStallMs) {
           const diag = {
             msSinceGrowth: Date.now() - lastGrowthAt,
             textLen: totalYielded,
@@ -382,7 +394,7 @@ export class WindsurfClient {
           if (totalYielded < STALL_RETRY_MIN_TEXT) {
             log.warn('Cascade warm stall (short, retrying on next account)', diag);
             endReason = 'stall_warm_retry';
-            const err = new Error('Cascade planner stalled after preamble — no progress for 25s');
+            const err = new Error(`Cascade planner stalled after preamble — no progress for ${Math.round(noGrowthStallMs / 1000)}s`);
             err.isModelError = true;
             throw err;
           }
@@ -534,6 +546,12 @@ export class WindsurfClient {
         } else {
           idleCount = 0;
         }
+
+        pollInterval = getCascadePollInterval({
+          sawText,
+          totalThinking,
+          msSinceGrowth: Date.now() - lastGrowthAt,
+        });
       }
       if (endReason === 'unknown') endReason = 'max_wait';
 

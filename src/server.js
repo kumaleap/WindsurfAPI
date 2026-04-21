@@ -78,6 +78,12 @@ function json(res, status, body) {
   res.end(data);
 }
 
+function prepareStreamResponse(req, res) {
+  req.socket?.setNoDelay?.(true);
+  req.socket?.setKeepAlive?.(true, 30_000);
+  res.flushHeaders?.();
+}
+
 async function route(req, res) {
   const { method } = req;
   const path = req.url.split('?')[0];
@@ -220,6 +226,7 @@ async function route(req, res) {
     const result = await handleResponses(body);
     if (result.stream) {
       res.writeHead(result.status, { 'Access-Control-Allow-Origin': '*', ...result.headers });
+      prepareStreamResponse(req, res);
       await result.handler(res);
     } else {
       json(res, result.status, result.body);
@@ -248,6 +255,7 @@ async function route(req, res) {
     const result = await handleChatCompletions(body);
     if (result.stream) {
       res.writeHead(result.status, { 'Access-Control-Allow-Origin': '*', ...result.headers });
+      prepareStreamResponse(req, res);
       await result.handler(res);
     } else {
       json(res, result.status, result.body);
@@ -283,6 +291,7 @@ async function route(req, res) {
     const result = await handleMessages(body);
     if (result.stream) {
       res.writeHead(result.status, { 'Access-Control-Allow-Origin': '*', ...result.headers });
+      prepareStreamResponse(req, res);
       await result.handler(res);
     } else {
       json(res, result.status, result.body);

@@ -230,6 +230,10 @@ export class ToolCallStreamParser {
     this._totalSeen = 0;
   }
 
+  isIdle() {
+    return !this.buffer && !this.inToolCall && !this.inToolResult;
+  }
+
   feed(delta) {
     if (!delta) return { text: '', toolCalls: [] };
     this.buffer += delta;
