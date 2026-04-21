@@ -788,3 +788,154 @@ export function parseTrajectorySteps(buf) {
 
   return results;
 }
+
+// ─── GetUserStatus (authoritative tier + model allowlist) ──
+//
+// LanguageServerService/GetUserStatus → GetUserStatusResponse {
+//   UserStatus user_status = 1;
+//   PlanInfo   plan_info   = 2;
+// }
+// GetUserStatusRequest { Metadata metadata = 1; }
+//
+// Beats our probe-based inferTier — one RPC returns exact tier, trial
+// end time, per-model allowlist with credit multipliers, credit usage.
+// Verified via extracted FileDescriptorProto on 2026-04-21 (scripts/ls-protos).
+
+export function buildGetUserStatusRequest(apiKey) {
+  return writeMessageField(1, buildMetadata(apiKey));
+}
+
+// exa.codeium_common_pb.TeamsTier → free | pro
+// Values as defined in the binary (enum TeamsTier). Paid/trial tiers all
+// map to 'pro' so the caller can unlock premium models uniformly.
+// UNSPECIFIED(0) and WAITLIST_PRO(6) and DEVIN_FREE(19) are the only frees.
+export function mapTeamsTier(t) {
+  if (t === 0 || t === 6 || t === 19) return 'free';
+  if (t > 0) return 'pro';
+  return 'unknown';
+}
+
+// Human-readable label for dashboard display.
+export function teamsTierLabel(t) {
+  return ({
+    0: 'Unspecified', 1: 'Teams', 2: 'Pro', 3: 'Enterprise (SaaS)',
+    4: 'Hybrid', 5: 'Enterprise (Self-Hosted)', 6: 'Waitlist Pro',
+    7: 'Teams Ultimate', 8: 'Pro Ultimate', 9: 'Trial',
+    10: 'Enterprise (Self-Serve)', 11: 'Enterprise (SaaS Pooled)',
+    12: 'Devin Enterprise', 14: 'Devin Teams', 15: 'Devin Teams V2',
+    16: 'Devin Pro', 17: 'Devin Max', 18: 'Max',
+    19: 'Devin Free', 20: 'Devin Trial',
+  })[t] || `Tier ${t}`;
+}
+
+/**
+ * Parse GetUserStatusResponse into a flat object.
+ *
+ * UserStatus field numbers (exa.codeium_common_pb.UserStatus):
+ *   1  pro (bool)
+ *   3  name (string)
+ *   5  team_id (string)
+ *   7  email (string)
+ *   10 teams_tier (TeamsTier enum)
+ *   13 plan_status (PlanStatus message)
+ *   28 user_used_prompt_credits (int64)
+ *   29 user_used_flow_credits (int64)
+ *   33 cascade_model_config_data (CascadeModelConfigData)
+ *   34 windsurf_pro_trial_end_time (Timestamp)
+ *   35 max_num_premium_chat_messages (int64)
+ *
+ * PlanInfo field numbers (exa.codeium_common_pb.PlanInfo):
+ *   1  teams_tier
+ *   2  plan_name (string)
+ *   12 monthly_prompt_credits (int32)
+ *   13 monthly_flow_credits (int32)
+ *   16 is_enterprise (bool)
+ *   17 is_teams (bool)
+ *   21 cascade_allowed_models_config (repeated AllowedModelConfig)
+ *   32 has_paid_features (bool)
+ *
+ * AllowedModelConfig { ModelOrAlias model_or_alias = 1; float credit_multiplier = 2; }
+ * ModelOrAlias       { Model model = 1; ModelAlias alias = 2; }  (oneof in practice)
+ */
+export function parseGetUserStatusResponse(buf) {
+  const out = {
+    pro: false,
+    teamsTier: 0,
+    tierName: '',
+    email: '',
+    displayName: '',
+    teamId: '',
+    userUsedPromptCredits: 0,
+    userUsedFlowCredits: 0,
+    trialEndMs: 0,
+    maxPremiumChatMessages: 0,
+    planName: '',
+    monthlyPromptCredits: 0,
+    monthlyFlowCredits: 0,
+    hasPaidFeatures: false,
+    isTeams: false,
+    isEnterprise: false,
+    allowedModels: [], // [{ modelEnum, alias, multiplier }]
+  };
+
+  if (!buf || buf.length === 0) {
+    out.tierName = mapTeamsTier(out.teamsTier);
+    return out;
+  }
+  const top = parseFields(buf);
+  const usBuf = getField(top, 1, 2)?.value;
+  const piBuf = getField(top, 2, 2)?.value;
+
+  if (usBuf && usBuf.length) {
+    const us = parseFields(usBuf);
+    out.pro = (getField(us, 1, 0)?.value ?? 0) === 1;
+    out.displayName = getField(us, 3, 2)?.value?.toString('utf8') || '';
+    out.teamId = getField(us, 5, 2)?.value?.toString('utf8') || '';
+    out.email = getField(us, 7, 2)?.value?.toString('utf8') || '';
+    out.teamsTier = getField(us, 10, 0)?.value ?? 0;
+    out.userUsedPromptCredits = Number(getField(us, 28, 0)?.value ?? 0);
+    out.userUsedFlowCredits = Number(getField(us, 29, 0)?.value ?? 0);
+    out.maxPremiumChatMessages = Number(getField(us, 35, 0)?.value ?? 0);
+    const tsBuf = getField(us, 34, 2)?.value;
+    if (tsBuf && tsBuf.length) {
+      const tsFields = parseFields(tsBuf);
+      const secs = Number(getField(tsFields, 1, 0)?.value ?? 0);
+      out.trialEndMs = secs * 1000;
+    }
+  }
+
+  if (piBuf && piBuf.length) {
+    const pi = parseFields(piBuf);
+    if (!out.teamsTier) out.teamsTier = getField(pi, 1, 0)?.value ?? 0;
+    out.planName = getField(pi, 2, 2)?.value?.toString('utf8') || '';
+    out.monthlyPromptCredits = Number(getField(pi, 12, 0)?.value ?? 0);
+    out.monthlyFlowCredits = Number(getField(pi, 13, 0)?.value ?? 0);
+    out.isEnterprise = (getField(pi, 16, 0)?.value ?? 0) === 1;
+    out.isTeams = (getField(pi, 17, 0)?.value ?? 0) === 1;
+    out.hasPaidFeatures = (getField(pi, 32, 0)?.value ?? 0) === 1;
+
+    // cascade_allowed_models_config — repeated AllowedModelConfig (field 21)
+    for (const entry of getAllFields(pi, 21)) {
+      if (entry.wireType !== 2) continue;
+      const ac = parseFields(entry.value);
+      const moaBuf = getField(ac, 1, 2)?.value;
+      // credit_multiplier is float → wire type 5 (fixed32)
+      const cmField = getField(ac, 2, 5);
+      let multiplier = 1.0;
+      if (cmField && cmField.value.length === 4) {
+        multiplier = cmField.value.readFloatLE(0);
+      }
+      let modelEnum = 0;
+      let alias = 0;
+      if (moaBuf && moaBuf.length) {
+        const moa = parseFields(moaBuf);
+        modelEnum = getField(moa, 1, 0)?.value ?? 0;
+        alias = getField(moa, 2, 0)?.value ?? 0;
+      }
+      out.allowedModels.push({ modelEnum, alias, multiplier });
+    }
+  }
+
+  out.tierName = mapTeamsTier(out.teamsTier);
+  return out;
+}

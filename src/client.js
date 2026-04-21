@@ -21,6 +21,7 @@ import {
   buildGetTrajectoryRequest, parseTrajectoryStatus,
   buildGetTrajectoryStepsRequest, parseTrajectorySteps,
   buildGetGeneratorMetadataRequest, parseGeneratorMetadata,
+  buildGetUserStatusRequest, parseGetUserStatusResponse,
 } from './windsurf.js';
 
 const LS_SERVICE = '/exa.language_server_pb.LanguageServerService';
@@ -658,5 +659,19 @@ export class WindsurfClient {
       req.write(postData);
       req.end();
     });
+  }
+
+  // ── GetUserStatus ────────────────────────────────────────
+  //
+  // One-shot RPC that returns the account's canonical tier + cascade
+  // model allowlist + credit usage + trial end time. Replaces the
+  // probe-based tier inference for accounts where this call succeeds.
+  async getUserStatus() {
+    const proto = buildGetUserStatusRequest(this.apiKey);
+    const resp = await grpcUnary(
+      this.port, this.csrfToken,
+      `${LS_SERVICE}/GetUserStatus`, grpcFrame(proto), 10000,
+    );
+    return parseGetUserStatusResponse(resp);
   }
 }

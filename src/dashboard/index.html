@@ -2097,6 +2097,37 @@ const App = {
     const tierLabel = { pro: 'PRO', free: 'FREE', expired: '已过期', unknown: '未知' };
     tbody.innerHTML = (d.accounts || []).map(a => {
       const tier = a.tier || 'unknown';
+      // GetUserStatus snapshot — authoritative plan/trial/credit info (may be null)
+      const us = a.userStatus || null;
+      const usTipLines = [];
+      let tierSubline = '';
+      if (us) {
+        if (us.planName) usTipLines.push(`Plan: ${us.planName}`);
+        if (us.trialEndMs) {
+          const daysLeft = Math.max(0, Math.ceil((us.trialEndMs - Date.now()) / 86400000));
+          usTipLines.push(`Trial ends: ${new Date(us.trialEndMs).toLocaleDateString()} (${daysLeft}d left)`);
+          tierSubline = `${daysLeft}d trial`;
+        } else if (us.planName) {
+          tierSubline = us.planName.length > 12 ? us.planName.slice(0, 12) + '…' : us.planName;
+        }
+        if (us.monthlyPromptCredits > 0) {
+          usTipLines.push(`Prompt: ${us.promptCreditsUsed}/${us.monthlyPromptCredits}`);
+        }
+        if (us.monthlyFlowCredits > 0) {
+          usTipLines.push(`Flow: ${us.flowCreditsUsed}/${us.monthlyFlowCredits}`);
+        }
+        if (us.allowedModels?.length) {
+          usTipLines.push(`Allowed cascade models: ${us.allowedModels.length}`);
+        }
+        if (a.userStatusLastFetched) {
+          const ago = Math.round((Date.now() - a.userStatusLastFetched) / 60000);
+          usTipLines.push(`Fetched: ${ago}m ago`);
+        }
+      }
+      const tierTooltip = usTipLines.length
+        ? usTipLines.join('\n')
+        : '点击手动修改层级（探测异常时用）';
+
       // Compact summary: avail/total + 编辑 button. Clicking opens modal.
       const tierModels = a.tierModels || [];
       const blockedCount = (a.blockedModels || []).length;
@@ -2164,7 +2195,12 @@ const App = {
       <tr>
         <td><code>${a.id}</code></td>
         <td>${this.esc(a.email)}</td>
-        <td><span class="tier ${tier}" style="cursor:pointer" title="点击手动修改层级（探测异常时用）" onclick="App.overrideTier('${a.id}','${tier}')">${tierLabel[tier] || tier}${a.tierManual ? ' ✎' : ''}</span></td>
+        <td>
+          <div style="display:flex;flex-direction:column;gap:2px">
+            <span class="tier ${tier}" style="cursor:pointer" title="${this.esc(tierTooltip)}" onclick="App.overrideTier('${a.id}','${tier}')">${tierLabel[tier] || tier}${a.tierManual ? ' ✎' : ''}</span>
+            ${tierSubline ? `<span class="text-xs text-dim" style="font-size:10px">${this.esc(tierSubline)}</span>` : ''}
+          </div>
+        </td>
         <td>${rpmCell}</td>
         <td>${creditCell}</td>
         <td>${capsHtml}</td>

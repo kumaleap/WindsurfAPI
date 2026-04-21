@@ -195,6 +195,25 @@ export function getModelInfo(id) {
   return MODELS[id] || null;
 }
 
+// Reverse map: Model enum number → list of catalog keys (enum may match
+// multiple variants if we ever dupe, but typically 1:1).
+const _enumToKeys = (() => {
+  const m = new Map();
+  for (const [key, info] of Object.entries(MODELS)) {
+    if (info.enumValue && info.enumValue > 0) {
+      const arr = m.get(info.enumValue) || [];
+      arr.push(key);
+      m.set(info.enumValue, arr);
+    }
+  }
+  return m;
+})();
+
+/** Reverse-lookup a Model enum number to our catalog keys. */
+export function getModelKeysByEnum(enumValue) {
+  return _enumToKeys.get(enumValue) || [];
+}
+
 // ─── Tier access ───────────────────────────────────────────
 
 const ALL_MODEL_KEYS = Object.keys(MODELS);
