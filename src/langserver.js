@@ -18,7 +18,7 @@ const DEFAULT_PORT = 42100;
 const DEFAULT_CSRF = 'windsurf-api-csrf-fixed-token';
 const DEFAULT_API_URL = 'https://server.self-serve.windsurf.com';
 
-// Pool: key -> { process, port, csrfToken, proxy, startedAt, ready, workspaceTrackedInit, cascadeSessions }
+// Pool: key -> { process, port, csrfToken, proxy, startedAt, ready, workspaceTrackedInit, cascadeSessions, forceCascadeWarmups }
 const _pool = new Map();
 let _nextPort = DEFAULT_PORT + 1;
 let _binaryPath = DEFAULT_BINARY;
@@ -86,6 +86,7 @@ export async function ensureLs(proxy = null) {
       proxy: null, startedAt: Date.now(), ready: true,
       workspaceTrackedInit: null,
       cascadeSessions: new Map(),
+      forceCascadeWarmups: new Map(),
     };
     _pool.set(key, entry);
     return entry;
@@ -156,6 +157,10 @@ export async function ensureLs(proxy = null) {
     workspaceTrackedInit: null,
     // apiKey -> { sessionId, panelInit, readyAt, lastUsedAt }
     cascadeSessions: new Map(),
+    // apiKey -> Promise for in-flight forced panel re-warm. This dedupes
+    // concurrent "panel state missing" recoveries so one bad session doesn't
+    // fan out into repeated rotate/re-init bursts.
+    forceCascadeWarmups: new Map(),
   };
   _pool.set(key, entry);
 

@@ -30,6 +30,11 @@ const QUEUE_RETRY_MS = 1_000;
 const QUEUE_MAX_WAIT_MS = 30_000;
 const STREAM_PRELUDE_COMMIT_CHARS = 96;
 const STREAM_PRELUDE_COMMIT_MS = 900;
+const STREAM_FASTLANE_CHARS = 40;
+const STREAM_FASTLANE_MIN_CHARS = 18;
+const STREAM_FASTLANE_MS = 260;
+const STREAM_FASTLANE_BOUNDARY_CHARS = 18;
+const STREAM_FASTLANE_BOUNDARY_MS = 140;
 const STREAM_THINKING_COMMIT_CHARS = 24;
 const STREAM_THINKING_COMMIT_MS = 220;
 const STREAM_FOLLOWUP_COMMIT_CHARS = 56;
@@ -733,6 +738,16 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
             const lastText = onlyText
               ? staged.reduce((tail, entry) => entry.value || tail, '')
               : '';
+            const firstTextFastLane = !committedOutput
+              && onlyText
+              && !hasToolCall
+              && !hasThinking
+              && (
+                (endsAtNaturalBoundary(lastText)
+                  && (stagedChars >= STREAM_FASTLANE_BOUNDARY_CHARS || ageMs >= STREAM_FASTLANE_BOUNDARY_MS))
+                || stagedChars >= STREAM_FASTLANE_CHARS
+                || (ageMs >= STREAM_FASTLANE_MS && stagedChars >= STREAM_FASTLANE_MIN_CHARS)
+              );
             const phaseChars = committedOutput ? STREAM_FOLLOWUP_COMMIT_CHARS : STREAM_PRELUDE_COMMIT_CHARS;
             const phaseMs = committedOutput ? STREAM_FOLLOWUP_COMMIT_MS : STREAM_PRELUDE_COMMIT_MS;
             const thinkingChars = committedOutput ? STREAM_FOLLOWUP_THINKING_COMMIT_CHARS : STREAM_THINKING_COMMIT_CHARS;
@@ -743,6 +758,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
               && (stagedChars >= STREAM_FOLLOWUP_BOUNDARY_CHARS || ageMs >= STREAM_FOLLOWUP_BOUNDARY_MS);
             const shouldFlush = force
               || hasToolCall
+              || firstTextFastLane
               || (hasThinking && (stagedChars >= thinkingChars || ageMs >= thinkingMs))
               || boundaryFlush
               || stagedChars >= phaseChars
@@ -907,6 +923,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
             }
             slog.info('Stream completed', {
               ...summarizeStreamMetrics(streamMetrics),
+              upstreamTimings: cascadeResult?.timings || null,
               usageSource: cascadeResult?.usage ? 'server' : 'estimated',
               cacheStored: !!(ckey && !collectedToolCalls.length && (accText || accThinking)),
               textChars: accText.length,
@@ -967,6 +984,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
             res.write('data: [DONE]\n\n');
             slog.warn('Stream closed after partial output', {
               ...summarizeStreamMetrics(streamMetrics),
+              upstreamTimings: lastErr?.cascadeTimings || null,
               error: sanitizeText(lastErr?.message || ''),
               textChars: accText.length,
               thinkingChars: accThinking.length,
@@ -992,6 +1010,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
             res.write('data: [DONE]\n\n');
             slog.error('Stream failed before any visible output', {
               ...summarizeStreamMetrics(streamMetrics),
+              upstreamTimings: lastErr?.cascadeTimings || null,
               errorType: errType,
               allRateLimited: rl.allLimited,
               error: sanitizeText(lastErr?.message || 'no accounts'),
