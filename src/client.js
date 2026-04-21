@@ -25,6 +25,7 @@ import {
 } from './windsurf.js';
 
 const LS_SERVICE = '/exa.language_server_pb.LanguageServerService';
+const CASCADE_SESSION_IDLE_TTL_MS = 20 * 60 * 1000;
 
 function getCascadePollInterval({ sawText, totalThinking, msSinceGrowth }) {
   if (!sawText && totalThinking === 0) return 100;
@@ -40,6 +41,31 @@ function contentToString(content) {
     return content.map(p => (typeof p?.text === 'string' ? p.text : JSON.stringify(p))).join('');
   }
   return content == null ? '' : JSON.stringify(content);
+}
+
+function getCascadeSessionState(lsEntry, apiKey, force = false) {
+  if (!lsEntry || !apiKey) return null;
+  if (!lsEntry.cascadeSessions) lsEntry.cascadeSessions = new Map();
+
+  const existing = lsEntry.cascadeSessions.get(apiKey);
+  const stale = !!(existing?.lastUsedAt && (Date.now() - existing.lastUsedAt) > CASCADE_SESSION_IDLE_TTL_MS);
+
+  if (force || !existing || stale) {
+    if (stale) {
+      log.info(`Cascade session expired after idle, rotating LS port=${lsEntry.port}`);
+    }
+    const state = {
+      sessionId: randomUUID(),
+      panelInit: null,
+      readyAt: 0,
+      lastUsedAt: Date.now(),
+    };
+    lsEntry.cascadeSessions.set(apiKey, state);
+    return state;
+  }
+
+  existing.lastUsedAt = Date.now();
+  return existing;
 }
 
 // ─── WindsurfClient ────────────────────────────────────────
@@ -119,39 +145,51 @@ export class WindsurfClient {
   warmupCascade(force = false) {
     const lsEntry = getLsEntryByPort(this.port);
     if (!lsEntry) return Promise.resolve();
-    if (force) {
-      lsEntry.workspaceInit = null;
-      lsEntry.sessionId = randomUUID();
-    }
-    if (!lsEntry.sessionId) lsEntry.sessionId = randomUUID();
-    if (lsEntry.workspaceInit) return lsEntry.workspaceInit;
-
-    const sessionId = lsEntry.sessionId;
     const workspacePath = '/tmp/windsurf-workspace';
     const workspaceUri = 'file:///tmp/windsurf-workspace';
+    const session = getCascadeSessionState(lsEntry, this.apiKey, force);
+    if (!session) return Promise.resolve();
 
-    lsEntry.workspaceInit = (async () => {
+    if (!lsEntry.workspaceTrackedInit) {
+      lsEntry.workspaceTrackedInit = (async () => {
+        try {
+          const addWsProto = buildAddTrackedWorkspaceRequest(this.apiKey, workspacePath, session.sessionId);
+          await grpcUnary(this.port, this.csrfToken,
+            `${LS_SERVICE}/AddTrackedWorkspace`, grpcFrame(addWsProto), 5000);
+        } catch (e) { log.warn(`AddTrackedWorkspace: ${e.message}`); }
+        log.info(`Cascade workspace tracked for LS port=${this.port}`);
+      })().catch(e => {
+        lsEntry.workspaceTrackedInit = null;
+        throw e;
+      });
+    }
+
+    if (session.panelInit) return session.panelInit;
+
+    const sessionId = session.sessionId;
+    session.panelInit = (async () => {
+      try {
+        await lsEntry.workspaceTrackedInit.catch(() => {});
+      } catch {}
       try {
         const initProto = buildInitializePanelStateRequest(this.apiKey, sessionId);
         await grpcUnary(this.port, this.csrfToken,
           `${LS_SERVICE}/InitializeCascadePanelState`, grpcFrame(initProto), 5000);
       } catch (e) { log.warn(`InitializeCascadePanelState: ${e.message}`); }
       try {
-        const addWsProto = buildAddTrackedWorkspaceRequest(this.apiKey, workspacePath, sessionId);
-        await grpcUnary(this.port, this.csrfToken,
-          `${LS_SERVICE}/AddTrackedWorkspace`, grpcFrame(addWsProto), 5000);
-      } catch (e) { log.warn(`AddTrackedWorkspace: ${e.message}`); }
-      try {
         const trustProto = buildUpdateWorkspaceTrustRequest(this.apiKey, workspaceUri, true, sessionId);
         await grpcUnary(this.port, this.csrfToken,
           `${LS_SERVICE}/UpdateWorkspaceTrust`, grpcFrame(trustProto), 5000);
       } catch (e) { log.warn(`UpdateWorkspaceTrust: ${e.message}`); }
-      log.info(`Cascade workspace init complete for LS port=${this.port}`);
+      session.readyAt = Date.now();
+      session.lastUsedAt = Date.now();
+      log.info(`Cascade panel init complete for LS port=${this.port}`);
     })().catch(e => {
-      lsEntry.workspaceInit = null;
+      session.panelInit = null;
+      session.readyAt = 0;
       throw e;
     });
-    return lsEntry.workspaceInit;
+    return session.panelInit;
   }
 
   // ─── Cascade flow ────────────────────────────────────────
@@ -172,14 +210,20 @@ export class WindsurfClient {
     const { onChunk, onEnd, onError, signal, reuseEntry, toolPreamble } = opts;
     const aborted = () => signal?.aborted;
     const inputChars = messages.reduce((n, m) => n + contentToString(m?.content).length, 0);
+    let activeReuseEntry = reuseEntry || null;
 
-    log.debug(`CascadeChat: uid=${modelUid} enum=${modelEnum} msgs=${messages.length} reuse=${!!reuseEntry}`);
+    log.debug(`CascadeChat: uid=${modelUid} enum=${modelEnum} msgs=${messages.length} reuse=${!!activeReuseEntry}`);
 
     // One-shot per-LS workspace init (idempotent; typically pre-warmed at
     // LS startup). Falls back to a local session id if the LS entry is gone.
     const lsEntry = getLsEntryByPort(this.port);
     await this.warmupCascade().catch(() => {});
-    let sessionId = reuseEntry?.sessionId || lsEntry?.sessionId || randomUUID();
+    let sessionState = getCascadeSessionState(lsEntry, this.apiKey);
+    if (activeReuseEntry?.sessionId && sessionState?.sessionId && activeReuseEntry.sessionId !== sessionState.sessionId) {
+      log.info(`Cascade reuse skipped — panel session rotated on LS port=${this.port}`);
+      activeReuseEntry = null;
+    }
+    let sessionId = activeReuseEntry?.sessionId || sessionState?.sessionId || randomUUID();
 
     // "panel state not found" means the LS forgot the panel for our sessionId
     // (LS restarted, TTL expired, etc.). Re-run warmupCascade with a fresh
@@ -190,9 +234,9 @@ export class WindsurfClient {
       // Step 1: Start cascade — with retry on panel-state-not-found
       let cascadeId;
       const openCascade = async () => {
-        if (reuseEntry?.cascadeId) {
-          log.debug(`Cascade resumed: ${reuseEntry.cascadeId}`);
-          return reuseEntry.cascadeId;
+        if (activeReuseEntry?.cascadeId) {
+          log.debug(`Cascade resumed: ${activeReuseEntry.cascadeId}`);
+          return activeReuseEntry.cascadeId;
         }
         const startProto = buildStartCascadeRequest(this.apiKey, sessionId);
         const startResp = await grpcUnary(
@@ -209,8 +253,9 @@ export class WindsurfClient {
         if (!isPanelMissing(e)) throw e;
         log.warn(`Panel state missing, re-warming LS port=${this.port}`);
         await this.warmupCascade(true).catch(() => {});
-        sessionId = getLsEntryByPort(this.port)?.sessionId || randomUUID();
-        if (reuseEntry) reuseEntry.cascadeId = null; // force StartCascade
+        sessionState = getCascadeSessionState(getLsEntryByPort(this.port), this.apiKey);
+        sessionId = sessionState?.sessionId || randomUUID();
+        if (activeReuseEntry) activeReuseEntry.cascadeId = null; // force StartCascade
         cascadeId = await openCascade();
       }
 
@@ -229,7 +274,7 @@ export class WindsurfClient {
       // emission contract there). This function just stitches system + u/a
       // turns into the single text payload Cascade accepts.
       let text;
-      if (reuseEntry?.cascadeId) {
+      if (activeReuseEntry?.cascadeId) {
         const lastUser = [...messages].reverse().find(m => m.role === 'user');
         text = lastUser ? contentToString(lastUser.content) : '';
       } else {
@@ -267,13 +312,15 @@ export class WindsurfClient {
         if (!isPanelMissing(e)) throw e;
         log.warn(`Panel state missing on Send, re-warming + restarting cascade port=${this.port}`);
         await this.warmupCascade(true).catch(() => {});
-        sessionId = getLsEntryByPort(this.port)?.sessionId || randomUUID();
+        sessionState = getCascadeSessionState(getLsEntryByPort(this.port), this.apiKey);
+        sessionId = sessionState?.sessionId || randomUUID();
         const startProto = buildStartCascadeRequest(this.apiKey, sessionId);
         const startResp = await grpcUnary(
           this.port, this.csrfToken, `${LS_SERVICE}/StartCascade`, grpcFrame(startProto)
         );
         cascadeId = parseStartCascadeResponse(startResp);
         if (!cascadeId) throw new Error('StartCascade returned empty cascade_id after re-warm');
+        if (activeReuseEntry) activeReuseEntry.cascadeId = null;
         await sendMessage();
       }
 
@@ -622,6 +669,7 @@ export class WindsurfClient {
       // Attach cascade metadata so the caller can check it back into the
       // conversation pool. We still return the array so existing callers
       // that iterate over it keep working.
+      if (sessionState) sessionState.lastUsedAt = Date.now();
       chunks.cascadeId = cascadeId;
       chunks.sessionId = sessionId;
       chunks.toolCalls = toolCalls;

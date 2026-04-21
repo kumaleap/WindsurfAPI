@@ -409,14 +409,15 @@ export function getRpmStats() {
  * the first-time LS spawn.
  */
 export async function ensureLsForAccount(accountId) {
-  const { ensureLs } = await import('./langserver.js');
   const account = accounts.find(a => a.id === accountId);
+  if (!account || account.status !== 'active') return;
+  const { ensureLs } = await import('./langserver.js');
   const proxy = getEffectiveProxy(accountId) || null;
   try {
     const ls = await ensureLs(proxy);
     // Pre-warm the Cascade workspace init so the first real request on this
-    // LS doesn't pay the 3-roundtrip setup cost. Fire-and-forget — chat
-    // requests still await the same Promise if it hasn't finished yet.
+    // account/LS pair doesn't pay the panel bootstrap cost. Fire-and-forget —
+    // chat requests still await the same Promise if it hasn't finished yet.
     if (ls && account?.apiKey) {
       const { WindsurfClient } = await import('./client.js');
       const client = new WindsurfClient(account.apiKey, ls.port, ls.csrfToken);
@@ -935,18 +936,12 @@ export async function initAuth() {
     }, TOKEN_REFRESH_INTERVAL).unref?.();
   }
 
-  // Warm up an LS instance for each account's configured proxy so the first
-  // chat request doesn't pay the spawn cost.
-  const { ensureLs } = await import('./langserver.js');
-  const uniqueProxies = new Map();
+  // Warm up both the LS process and the per-account Cascade panel session so
+  // the first real Claude request doesn't pay for spawn + panel bootstrap.
   for (const a of accounts) {
-    const p = getEffectiveProxy(a.id);
-    const k = p ? `${p.host}:${p.port}` : 'default';
-    if (!uniqueProxies.has(k)) uniqueProxies.set(k, p || null);
-  }
-  for (const p of uniqueProxies.values()) {
-    try { await ensureLs(p); }
-    catch (e) { log.warn(`LS warmup failed: ${e.message}`); }
+    if (a.status !== 'active') continue;
+    try { await ensureLsForAccount(a.id); }
+    catch (e) { log.warn(`LS/account warmup failed for ${a.email}: ${e.message}`); }
   }
 
   const counts = getAccountCount();

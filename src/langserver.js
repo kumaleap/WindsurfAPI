@@ -18,7 +18,7 @@ const DEFAULT_PORT = 42100;
 const DEFAULT_CSRF = 'windsurf-api-csrf-fixed-token';
 const DEFAULT_API_URL = 'https://server.self-serve.windsurf.com';
 
-// Pool: key -> { process, port, csrfToken, proxy, startedAt, ready }
+// Pool: key -> { process, port, csrfToken, proxy, startedAt, ready, workspaceTrackedInit, cascadeSessions }
 const _pool = new Map();
 let _nextPort = DEFAULT_PORT + 1;
 let _binaryPath = DEFAULT_BINARY;
@@ -84,7 +84,8 @@ export async function ensureLs(proxy = null) {
     const entry = {
       process: null, port, csrfToken: DEFAULT_CSRF,
       proxy: null, startedAt: Date.now(), ready: true,
-      workspaceInit: null, sessionId: null,
+      workspaceTrackedInit: null,
+      cascadeSessions: new Map(),
     };
     _pool.set(key, entry);
     return entry;
@@ -150,11 +151,11 @@ export async function ensureLs(proxy = null) {
   const entry = {
     process: proc, port, csrfToken: DEFAULT_CSRF,
     proxy, startedAt: Date.now(), ready: false,
-    // One-shot Cascade workspace init promise. cascadeChat() awaits this so
-    // the heavy InitializePanelState / AddTrackedWorkspace / UpdateWorkspaceTrust
-    // trio only runs once per LS lifetime instead of once per request.
-    workspaceInit: null,
-    sessionId: null,
+    // LS-level one-shot tracked-workspace setup. Panel sessions are account-
+    // scoped and live in cascadeSessions below.
+    workspaceTrackedInit: null,
+    // apiKey -> { sessionId, panelInit, readyAt, lastUsedAt }
+    cascadeSessions: new Map(),
   };
   _pool.set(key, entry);
 
