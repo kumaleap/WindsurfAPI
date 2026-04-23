@@ -23,6 +23,8 @@ const accounts = [];
 let _roundRobinIndex = 0;
 const PERMANENT_MODEL_BLOCK_TTL_MS = 6 * 60 * 60 * 1000;
 const FREE_TIER_CANARIES = ['gpt-4o-mini', 'gemini-2.5-flash'];
+const TOKEN_REFRESH_INTERVAL = 50 * 60 * 1000;
+let _tokenRefreshTimer = null;
 
 // Per-tier requests-per-minute limits. Used for both filter-by-cap and
 // weighted selection (accounts with more headroom are preferred).
@@ -333,6 +335,7 @@ export function setAccountTokens(id, { apiKey, refreshToken, idToken } = {}) {
   if (refreshToken != null) account.refreshToken = refreshToken;
   if (idToken != null) account.idToken = idToken;
   saveAccounts();
+  if (refreshToken) ensureFirebaseRefreshScheduler();
   return true;
 }
 
@@ -948,6 +951,16 @@ async function refreshAllFirebaseTokens() {
   }
 }
 
+function ensureFirebaseRefreshScheduler() {
+  if (_tokenRefreshTimer) return;
+  if (!accounts.some(a => !!a.refreshToken)) return;
+  refreshAllFirebaseTokens().catch(e => log.warn(`Initial token refresh: ${e.message}`));
+  _tokenRefreshTimer = setInterval(() => {
+    refreshAllFirebaseTokens().catch(e => log.warn(`Scheduled token refresh: ${e.message}`));
+  }, TOKEN_REFRESH_INTERVAL);
+  _tokenRefreshTimer.unref?.();
+}
+
 // ─── Init from .env ────────────────────────────────────────
 
 export async function initAuth() {
@@ -1001,14 +1014,7 @@ export async function initAuth() {
 
   // Periodic Firebase token refresh (every 50 min). Firebase ID tokens expire
   // after 60 min; refreshing at 50 keeps a comfortable margin.
-  const hasRefreshTokens = accounts.some(a => !!a.refreshToken);
-  if (hasRefreshTokens) {
-    const TOKEN_REFRESH_INTERVAL = 50 * 60 * 1000;
-    refreshAllFirebaseTokens().catch(e => log.warn(`Initial token refresh: ${e.message}`));
-    setInterval(() => {
-      refreshAllFirebaseTokens().catch(e => log.warn(`Scheduled token refresh: ${e.message}`));
-    }, TOKEN_REFRESH_INTERVAL).unref?.();
-  }
+  ensureFirebaseRefreshScheduler();
 
   // Warm up both the LS process and the per-account Cascade panel session so
   // the first real Claude request doesn't pay for spawn + panel bootstrap.
