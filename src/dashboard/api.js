@@ -96,7 +96,7 @@ async function processWindsurfLogin({ email, password, loginProxy, autoAdd }) {
 export async function handleDashboardApi(method, subpath, body, req, res) {
   if (method === 'OPTIONS') return json(res, 204, '');
 
-  if (!isDashboardAccessEnabled()) {
+  if (subpath !== '/auth' && !isDashboardAccessEnabled()) {
     return json(res, 503, {
       error: 'Dashboard access is disabled until DASHBOARD_PASSWORD or API_KEY is set. Set ALLOW_OPEN_DASHBOARD=true to bypass.',
       disabled: true,
