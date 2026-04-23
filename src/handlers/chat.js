@@ -44,6 +44,8 @@ const STREAM_FOLLOWUP_BOUNDARY_MS = 90;
 const STREAM_FOLLOWUP_THINKING_COMMIT_CHARS = 20;
 const STREAM_FOLLOWUP_THINKING_COMMIT_MS = 120;
 const TOOL_MODE_EARLY_FINISH_GRACE_MS = 700;
+const TOOL_MODE_PROSE_FLUSH_CHARS = 480;
+const TOOL_MODE_PROSE_FLUSH_MS = 1800;
 const MAX_EMULATED_TOOL_CALLS_PER_ROUND = 16;
 const HAIKU_TOOL_OUTPUT_GUARD_INPUT_CHARS = 30_000;
 const LONG_TOOL_OUTPUT_GUARD_INPUT_CHARS = 120_000;
@@ -153,15 +155,15 @@ function normalizeEmulatedToolCalls(toolCalls, maxCalls = MAX_EMULATED_TOOL_CALL
   return { toolCalls: accepted, droppedDuplicates, droppedOverflow };
 }
 
-function buildOutputGuardSystemMessage(modelKey, maxTokens, emulateTools, inputChars) {
+function buildOutputGuardSystemMessage(modelKey, maxTokens, activeToolCallMode, inputChars) {
   const requestedTokens = Number.isFinite(maxTokens) && maxTokens > 0
     ? Math.max(64, Math.floor(maxTokens))
     : null;
   const isHaiku = modelKey === 'claude-4.5-haiku';
   const shouldGuard = !!(
     (requestedTokens && requestedTokens <= 1400)
-    || (isHaiku && emulateTools && inputChars >= HAIKU_TOOL_OUTPUT_GUARD_INPUT_CHARS)
-    || (emulateTools && inputChars >= LONG_TOOL_OUTPUT_GUARD_INPUT_CHARS)
+    || (isHaiku && activeToolCallMode && inputChars >= HAIKU_TOOL_OUTPUT_GUARD_INPUT_CHARS)
+    || (activeToolCallMode && inputChars >= LONG_TOOL_OUTPUT_GUARD_INPUT_CHARS)
   );
   if (!shouldGuard) return null;
 
@@ -466,16 +468,17 @@ export async function handleChatCompletions(body) {
   const hasTools = Array.isArray(tools) && tools.length > 0;
   const hasToolHistory = Array.isArray(messages) && messages.some(m => m?.role === 'tool' || (m?.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length));
   const emulateTools = useCascade && (hasTools || hasToolHistory);
+  const activeToolCallMode = useCascade && hasTools;
   // Build proto-level preamble (goes into tool_calling_section override);
   // pass empty tools to normalizeMessagesForCascade so it only rewrites
   // role:tool / assistant.tool_calls messages without injecting a user-level
   // preamble (that's now handled at the proto layer).
-  const toolPreamble = emulateTools ? buildToolPreambleForProto(tools || [], tool_choice) : '';
+  const toolPreamble = activeToolCallMode ? buildToolPreambleForProto(tools || [], tool_choice) : '';
   let cascadeMessages = emulateTools
     ? normalizeMessagesForCascade(messages, [])
     : [...messages];
   const inputChars = estimateMessageChars(messages);
-  const outputGuard = buildOutputGuardSystemMessage(modelKey, max_tokens, emulateTools, inputChars);
+  const outputGuard = buildOutputGuardSystemMessage(modelKey, max_tokens, activeToolCallMode, inputChars);
   const lastHumanUserExcerpt = getLastHumanUserMessageExcerpt(messages);
   const replyLanguageGuard = buildReplyLanguageSystemMessage(lastHumanUserExcerpt);
 
@@ -536,7 +539,7 @@ export async function handleChatCompletions(body) {
     : null;
 
   if (stream) {
-    return streamResponse(chatId, created, displayModel, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, ckey, emulateTools, toolPreamble);
+    return streamResponse(chatId, created, displayModel, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, ckey, emulateTools, activeToolCallMode, toolPreamble);
   }
 
   // ── Local response cache (exact body match) ─────────────
@@ -631,7 +634,7 @@ export async function handleChatCompletions(body) {
       client, chatId, created, displayModel, modelKey, messages, cascadeMessages, modelEnum, modelUid,
       useCascade, acct.apiKey, ckey,
       reuseEnabled ? { reuseEntry, lsPort: ls.port, apiKey: acct.apiKey } : null,
-      emulateTools, toolPreamble,
+      emulateTools, activeToolCallMode, toolPreamble,
     );
     if (result.status === 200) return result;
     reuseEntry = null; // don't try to reuse on the retry
@@ -663,7 +666,7 @@ export async function handleChatCompletions(body) {
   return lastErr || { status: 503, body: { error: { message: 'No active accounts available', type: 'pool_exhausted' } } };
 }
 
-async function nonStreamResponse(client, id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, apiKey, ckey, poolCtx, emulateTools, toolPreamble) {
+async function nonStreamResponse(client, id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, apiKey, ckey, poolCtx, emulateTools, activeToolCallMode, toolPreamble) {
   const startTime = Date.now();
   try {
     let allText = '';
@@ -691,7 +694,7 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
       {
         const parsed = parseToolCallsFromText(allText);
         allText = parsed.text;
-        if (emulateTools) {
+        if (activeToolCallMode) {
           const normalized = normalizeEmulatedToolCalls(parsed.toolCalls);
           toolCalls = normalized.toolCalls;
           if (normalized.droppedDuplicates || normalized.droppedOverflow) {
@@ -822,7 +825,7 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
   }
 }
 
-function streamResponse(id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, ckey, emulateTools, toolPreamble) {
+function streamResponse(id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, ckey, emulateTools, activeToolCallMode, toolPreamble) {
   return {
     status: 200,
     stream: true,
@@ -850,7 +853,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
         abortController.abort();
       };
       const scheduleToolModeEarlyFinish = () => {
-        if (!emulateTools) return;
+        if (!activeToolCallMode) return;
         clearToolEarlyFinishTimer();
         toolEarlyFinishTimer = setTimeout(() => {
           slog.info('Ending tool round early after complete tool_call burst');
@@ -920,6 +923,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
         turns: Array.isArray(messages) ? messages.length : 0,
         useCascade,
         emulateTools,
+        activeToolCallMode,
         cacheKey: !!ckey,
       });
       const tried = [];
@@ -1064,7 +1068,11 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
             // - If a tool call appears in this round, drop any buffered prose so
             //   the client only sees canonical tool_calls, not half-written
             //   planning text that the model would not keep in its final answer.
-            if (emulateTools) {
+            if (activeToolCallMode) {
+              const toolModeProseFlush = onlyText
+                && !hasThinking
+                && stagedChars >= TOOL_MODE_PROSE_FLUSH_CHARS
+                && ageMs >= TOOL_MODE_PROSE_FLUSH_MS;
               if (hasToolCall) {
                 const toolEntries = staged.filter((entry) => entry.kind === 'tool');
                 staged.length = 0;
@@ -1073,7 +1081,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
                 for (const entry of toolEntries) emitToolCallDelta(entry.value, entry.index);
                 return;
               }
-              if (!force) return;
+              if (!force && !toolModeProseFlush) return;
             }
 
             const firstTextFastLane = !committedOutput
@@ -1124,7 +1132,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
                 if (parserActive) {
                   const { text: safe, toolCalls: done } = toolParser.feed(chunk.text);
                   safeText = safe;
-                  if (emulateTools) {
+                  if (activeToolCallMode) {
                     let acceptedToolCall = false;
                     for (const tc of done) {
                       if (acceptToolCall(tc)) acceptedToolCall = true;
@@ -1209,7 +1217,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
                 const clean = pathStreamText.feed(tail.text);
                 if (clean) stageChunk({ kind: 'text', value: clean, visibleChars: clean.length });
               }
-              if (emulateTools) {
+              if (activeToolCallMode) {
                 let acceptedTailToolCall = false;
                 for (const tc of tail.toolCalls) {
                   if (acceptToolCall(tc)) acceptedTailToolCall = true;
