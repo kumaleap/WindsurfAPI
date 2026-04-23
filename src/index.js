@@ -1,6 +1,6 @@
 // Logger must be imported first to patch log functions before other modules use them
 import './dashboard/logger.js';
-import { initAuth, isAuthenticated } from './auth.js';
+import { initAuth, isAuthenticated, saveAccountsSync } from './auth.js';
 import { startLanguageServer, waitForReady, isLanguageServerRunning, stopLanguageServer } from './langserver.js';
 import { startServer } from './server.js';
 import { config, log } from './config.js';
@@ -61,6 +61,13 @@ async function main() {
     log.warn('  POST /auth/login {"api_key":"..."}');
   }
 
+  if (!config.apiKey) {
+    log.warn('API_KEY is empty — API endpoints are publicly accessible.');
+  }
+  if (!config.dashboardPassword && !config.apiKey) {
+    log.warn('Dashboard auth is disabled — /dashboard and /dashboard/api are publicly accessible.');
+  }
+
   const server = startServer();
 
   let shuttingDown = false;
@@ -72,11 +79,13 @@ async function main() {
     if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
     server.close(() => {
       log.info('HTTP server closed, stopping language server');
+      try { saveAccountsSync(); } catch {}
       try { stopLanguageServer(); } catch {}
       process.exit(0);
     });
     setTimeout(() => {
       log.warn('Drain timeout, forcing exit');
+      try { saveAccountsSync(); } catch {}
       try { stopLanguageServer(); } catch {}
       process.exit(0);
     }, 30_000);

@@ -83,6 +83,17 @@ function saveAccounts() {
   }
 }
 
+export function saveAccountsSync() {
+  const tempFile = ACCOUNTS_FILE + '.shutdown.tmp';
+  try {
+    writeFileSync(tempFile, JSON.stringify(serializeAccounts(), null, 2));
+    renameSync(tempFile, ACCOUNTS_FILE);
+  } catch (e) {
+    log.error('Shutdown: failed to flush accounts:', e.message);
+    try { unlinkSync(tempFile); } catch {}
+  }
+}
+
 function loadAccounts() {
   try {
     if (!existsSync(ACCOUNTS_FILE)) return;
