@@ -83,6 +83,95 @@ function estimateMessageChars(messages) {
   return chars;
 }
 
+function contentTextChars(content) {
+  if (typeof content === 'string') return content.length;
+  if (!Array.isArray(content)) return 0;
+  let chars = 0;
+  for (const part of content) {
+    if (typeof part?.text === 'string') chars += part.text.length;
+    else if (typeof part?.image_url?.url === 'string' || typeof part?.image_url === 'string') chars += 1024;
+  }
+  return chars;
+}
+
+function getLastUserMessage(messages) {
+  if (!Array.isArray(messages)) return null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === 'user') return messages[i];
+  }
+  return null;
+}
+
+function getFirstText(content) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  const textPart = content.find(part => typeof part?.text === 'string');
+  return textPart?.text || '';
+}
+
+function summarizeChatRequest({
+  body,
+  messages,
+  model,
+  modelKey,
+  useCascade,
+  hasTools,
+  hasToolHistory,
+  emulateTools,
+  activeToolCallMode,
+  inputChars,
+}) {
+  const safeMessages = Array.isArray(messages) ? messages : [];
+  const roleCounts = safeMessages.reduce((acc, message) => {
+    const role = message?.role || 'unknown';
+    acc[role] = (acc[role] || 0) + 1;
+    return acc;
+  }, {});
+  let systemChars = 0;
+  let assistantToolCalls = 0;
+  let toolResultChars = 0;
+  let textParts = 0;
+  let imageParts = 0;
+  for (const message of safeMessages) {
+    if (message?.role === 'system') systemChars += contentTextChars(message.content);
+    if (message?.role === 'tool') toolResultChars += contentTextChars(message.content);
+    if (Array.isArray(message?.tool_calls)) assistantToolCalls += message.tool_calls.length;
+    if (Array.isArray(message?.content)) {
+      for (const part of message.content) {
+        if (typeof part?.text === 'string') textParts++;
+        if (part?.image_url) imageParts++;
+      }
+    }
+  }
+  const lastUser = getLastUserMessage(safeMessages);
+  const lastUserText = getFirstText(lastUser?.content).trimStart();
+  const toolsCount = Array.isArray(body?.tools) ? body.tools.length : 0;
+  return {
+    model,
+    modelKey,
+    stream: !!body?.stream,
+    maxTokens: body?.max_tokens || null,
+    useCascade,
+    messages: safeMessages.length,
+    roleCounts,
+    inputChars,
+    systemChars,
+    toolsCount,
+    hasTools,
+    hasToolHistory,
+    emulateTools,
+    activeToolCallMode,
+    assistantToolCalls,
+    toolResultCount: roleCounts.tool || 0,
+    toolResultChars,
+    textParts,
+    imageParts,
+    lastRole: safeMessages[safeMessages.length - 1]?.role || null,
+    lastUserChars: contentTextChars(lastUser?.content),
+    slashCommandWithoutTools: toolsCount === 0 && lastUserText.startsWith('/'),
+  };
+}
+
 function getCacheSkipReason({ text = '', thinking = '', messages, useCascade, toolCalls = 0 }) {
   const textChars = String(text || '').trim().length;
   const thinkingChars = String(thinking || '').trim().length;
@@ -478,6 +567,26 @@ export async function handleChatCompletions(body) {
     ? normalizeMessagesForCascade(messages, [])
     : [...messages];
   const inputChars = estimateMessageChars(messages);
+  const requestSummary = summarizeChatRequest({
+    body,
+    messages,
+    model: displayModel,
+    modelKey,
+    useCascade,
+    hasTools,
+    hasToolHistory,
+    emulateTools,
+    activeToolCallMode,
+    inputChars,
+  });
+  log.info('Chat request summary', requestSummary);
+  if (requestSummary.slashCommandWithoutTools) {
+    log.warn('Chat slash command arrived without tools; client may have sent an agent command as plain text', {
+      model: requestSummary.model,
+      messages: requestSummary.messages,
+      lastUserChars: requestSummary.lastUserChars,
+    });
+  }
   const outputGuard = buildOutputGuardSystemMessage(modelKey, max_tokens, activeToolCallMode, inputChars);
   const lastHumanUserExcerpt = getLastHumanUserMessageExcerpt(messages);
   const replyLanguageGuard = buildReplyLanguageSystemMessage(lastHumanUserExcerpt);
