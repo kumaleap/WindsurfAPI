@@ -27,25 +27,49 @@ function estimateCharTokens(chars) {
   return Math.max(1, Math.ceil(Math.max(0, chars) / 4));
 }
 
-function shouldPreferThinking(body) {
-  const thinking = body?.thinking;
-  if (!thinking) return false;
-  if (thinking === true) return true;
+function normalizeThinkingConfig(thinking) {
+  const config = { enabled: false, budgetTokens: null };
+  if (!thinking) return config;
+  if (thinking === true) {
+    config.enabled = true;
+    return config;
+  }
   if (typeof thinking === 'string') {
     const lowered = thinking.trim().toLowerCase();
-    return lowered === 'enabled' || lowered === 'on' || lowered === 'true';
+    config.enabled = lowered === 'enabled' || lowered === 'on' || lowered === 'true';
+    return config;
   }
-  if (typeof thinking !== 'object') return false;
-  if (thinking.enabled === true) return true;
-  if (typeof thinking.type === 'string' && thinking.type.trim().toLowerCase() === 'enabled') return true;
-  if (typeof thinking.budget_tokens === 'number' && thinking.budget_tokens > 0) return true;
-  return false;
+  if (typeof thinking !== 'object') return config;
+
+  if (thinking.enabled === true) config.enabled = true;
+  if (typeof thinking.type === 'string') {
+    const lowered = thinking.type.trim().toLowerCase();
+    if (lowered === 'enabled') config.enabled = true;
+    if (lowered === 'disabled') config.enabled = false;
+  }
+  if (typeof thinking.budget_tokens === 'number' && Number.isFinite(thinking.budget_tokens) && thinking.budget_tokens > 0) {
+    config.enabled = true;
+    config.budgetTokens = Math.max(128, Math.floor(thinking.budget_tokens));
+  }
+  return config;
+}
+
+function shouldPreferThinking(body) {
+  return normalizeThinkingConfig(body?.thinking).enabled;
 }
 
 function resolveAnthropicModel(body) {
   const requested = body?.model || 'claude-sonnet-4.6';
   if (!shouldPreferThinking(body)) return requested;
   return resolveThinkingModel(requested) || requested;
+}
+
+function buildThinkingBudgetSystemMessage(thinkingConfig) {
+  if (!thinkingConfig?.enabled || !thinkingConfig.budgetTokens) return null;
+  return [
+    'Thinking budget for this request:',
+    `If you produce internal reasoning, keep it concise and under roughly ${thinkingConfig.budgetTokens} tokens unless the user explicitly asks for a more exhaustive step-by-step breakdown.`,
+  ].join('\n');
 }
 
 function mapErrorType(type) {
@@ -68,6 +92,7 @@ function mapErrorType(type) {
 // ─── Anthropic → OpenAI request translation ──────────────────
 
 function anthropicToOpenAI(body) {
+  const thinkingConfig = normalizeThinkingConfig(body?.thinking);
   const messages = [];
   if (body.system) {
     const sysText = typeof body.system === 'string'
@@ -76,6 +101,10 @@ function anthropicToOpenAI(body) {
         ? body.system.map(b => b.text || '').join('\n')
         : '';
     if (sysText) messages.push({ role: 'system', content: sysText });
+  }
+  const thinkingBudgetMsg = buildThinkingBudgetSystemMessage(thinkingConfig);
+  if (thinkingBudgetMsg) {
+    messages.push({ role: 'system', content: thinkingBudgetMsg });
   }
   for (const m of (body.messages || [])) {
     const role = m.role === 'assistant' ? 'assistant' : 'user';
@@ -130,6 +159,7 @@ function anthropicToOpenAI(body) {
     messages,
     max_tokens: body.max_tokens || 8192,
     stream: !!body.stream,
+    anthropic_thinking: thinkingConfig,
     ...(tools.length ? { tools } : {}),
     ...(body.temperature != null ? { temperature: body.temperature } : {}),
     ...(body.top_p != null ? { top_p: body.top_p } : {}),
@@ -181,11 +211,11 @@ function estimateCountTokens(body) {
 
 // ─── OpenAI → Anthropic non-stream response translation ──────
 
-function openAIToAnthropic(result, model, msgId) {
+function openAIToAnthropic(result, model, msgId, thinkingConfig = { enabled: false }) {
   const choice = result.choices?.[0];
   const usage = result.usage || {};
   const content = [];
-  if (choice?.message?.reasoning_content) {
+  if (thinkingConfig.enabled && choice?.message?.reasoning_content) {
     content.push({ type: 'thinking', thinking: choice.message.reasoning_content });
   }
   if (choice?.message?.tool_calls?.length) {
@@ -224,10 +254,11 @@ function openAIToAnthropic(result, model, msgId) {
 // ─── Streaming translator: intercepts OpenAI SSE, emits Anthropic SSE ──
 
 class AnthropicStreamTranslator {
-  constructor(res, msgId, model) {
+  constructor(res, msgId, model, thinkingConfig = { enabled: false }) {
     this.res = res;
     this.msgId = msgId;
     this.model = model;
+    this.thinkingEnabled = !!thinkingConfig?.enabled;
     // Current content block: null | { type, index }
     // type: 'text' | 'thinking' | 'tool_use'
     this.current = null;
@@ -303,7 +334,7 @@ class AnthropicStreamTranslator {
   }
 
   emitThinkingDelta(text) {
-    if (!text) return;
+    if (!text || !this.thinkingEnabled) return;
     if (this.current?.type !== 'thinking') this.startBlock('thinking');
     this.send('content_block_delta', {
       type: 'content_block_delta',
@@ -482,6 +513,7 @@ export async function handleMessages(body) {
   const msgId = genMsgId();
   const requestedModel = body.model || 'claude-sonnet-4.6';
   const wantStream = !!body.stream;
+  const thinkingConfig = normalizeThinkingConfig(body?.thinking);
   const openaiBody = anthropicToOpenAI(body);
 
   if (!wantStream) {
@@ -498,7 +530,7 @@ export async function handleMessages(body) {
         },
       };
     }
-    return { status: 200, body: openAIToAnthropic(result.body, requestedModel, msgId) };
+    return { status: 200, body: openAIToAnthropic(result.body, requestedModel, msgId, thinkingConfig) };
   }
 
   // Streaming path — ask handleChatCompletions for its streaming handler and
@@ -530,7 +562,7 @@ export async function handleMessages(body) {
       'X-Accel-Buffering': 'no',
     },
     async handler(realRes) {
-      const translator = new AnthropicStreamTranslator(realRes, msgId, requestedModel);
+      const translator = new AnthropicStreamTranslator(realRes, msgId, requestedModel, thinkingConfig);
       const captureRes = createCaptureRes(translator);
       const socket = realRes.socket;
       if (socket) {
