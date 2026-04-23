@@ -44,6 +44,44 @@ function pruneRpmHistory(account, now) {
   return account._rpmHistory.length;
 }
 
+function maskEmailAddress(email) {
+  const trimmed = String(email || '').trim();
+  const at = trimmed.indexOf('@');
+  if (at <= 0 || at !== trimmed.lastIndexOf('@')) return null;
+  const local = trimmed.slice(0, at);
+  const domain = trimmed.slice(at + 1);
+  if (!local || !domain || /\s/.test(trimmed)) return null;
+  const maskedLocal = local.length <= 2
+    ? `${local[0] || '*'}*`
+    : `${local.slice(0, 2)}***`;
+  const domainParts = domain.split('.');
+  if (domainParts.length < 2) return `${maskedLocal}@***`;
+  const [firstLabel, ...rest] = domainParts;
+  const maskedDomain = `${(firstLabel || '').slice(0, 2) || '**'}***.${rest.join('.')}`;
+  return `${maskedLocal}@${maskedDomain}`;
+}
+
+function sanitizeAccountLabel(label) {
+  const raw = String(label == null ? '' : label).trim();
+  if (!raw) return 'unknown';
+  const maskedEmail = maskEmailAddress(raw);
+  if (maskedEmail) return maskedEmail;
+  if (/password|api[_ -]?key|refresh[_ -]?token|token|密码|邮箱|email[:：]/i.test(raw)) {
+    return 'redacted-label';
+  }
+  if (/[\r\n\t]/.test(raw)) return 'redacted-label';
+  if (raw.length > 48) return `${raw.slice(0, 20)}...`;
+  return raw;
+}
+
+export function getAccountLogLabel(accountLike) {
+  if (!accountLike) return 'unknown';
+  if (typeof accountLike === 'string') return sanitizeAccountLabel(accountLike);
+  const id = accountLike.id || '';
+  const label = sanitizeAccountLabel(accountLike.email || accountLike.label || '');
+  return id ? `${id}/${label}` : label;
+}
+
 let _saveInFlight = false;
 let _savePending = false;
 
@@ -185,7 +223,7 @@ export function addAccountByKey(apiKey, label = '') {
   account.credits = null;
   accounts.push(account);
   saveAccounts();
-  log.info(`Account added: ${account.id} (${account.email}) [api_key]`);
+  log.info(`Account added: ${getAccountLogLabel(account)} [api_key]`);
   return account;
 }
 
@@ -218,7 +256,7 @@ export async function addAccountByToken(token, label = '') {
   };
   accounts.push(account);
   saveAccounts();
-  log.info(`Account added: ${account.id} (${account.email}) [token] server=${account.apiServerUrl}`);
+  log.info(`Account added: ${getAccountLogLabel(account)} [token] server=${account.apiServerUrl}`);
   return account;
 }
 
@@ -351,7 +389,7 @@ export function removeAccount(id) {
   // Drop any Cascade conversations owned by this key so future requests
   // don't try to resume on an account that no longer exists.
   import('./conversation-pool.js').then(m => m.invalidateFor({ apiKey: account.apiKey })).catch(() => {});
-  log.info(`Account removed: ${id} (${account.email})`);
+  log.info(`Account removed: ${getAccountLogLabel(account)}`);
   return true;
 }
 
@@ -486,10 +524,10 @@ export function markRateLimited(apiKey, durationMs = 5 * 60 * 1000, modelKey = n
   if (modelKey) {
     if (!account._modelRateLimits) account._modelRateLimits = {};
     account._modelRateLimits[modelKey] = until;
-    log.warn(`Account ${account.id} (${account.email}) rate-limited on ${modelKey} for ${Math.round(durationMs / 60000)} min`);
+    log.warn(`Account ${getAccountLogLabel(account)} rate-limited on ${modelKey} for ${Math.round(durationMs / 60000)} min`);
   } else {
     account.rateLimitedUntil = until;
-    log.warn(`Account ${account.id} (${account.email}) rate-limited (all models) for ${Math.round(durationMs / 60000)} min`);
+    log.warn(`Account ${getAccountLogLabel(account)} rate-limited (all models) for ${Math.round(durationMs / 60000)} min`);
   }
 }
 
@@ -502,7 +540,7 @@ export function cooldownAccountModel(apiKey, modelKey, durationMs = 30 * 1000, r
     until: Date.now() + durationMs,
     reason,
   };
-  log.warn(`Account ${account.id} (${account.email}) cooled down on ${modelKey} for ${Math.round(durationMs / 1000)}s (${reason})`);
+  log.warn(`Account ${getAccountLogLabel(account)} cooled down on ${modelKey} for ${Math.round(durationMs / 1000)}s (${reason})`);
 }
 
 /**
@@ -539,7 +577,7 @@ export function reportError(apiKey) {
   account.errorCount++;
   if (account.errorCount >= 3) {
     account.status = 'error';
-    log.warn(`Account ${account.id} (${account.email}) disabled after ${account.errorCount} errors`);
+    log.warn(`Account ${getAccountLogLabel(account)} disabled after ${account.errorCount} errors`);
   }
 }
 
@@ -568,7 +606,7 @@ export function reportInternalError(apiKey) {
   account.internalErrorStreak = (account.internalErrorStreak || 0) + 1;
   if (account.internalErrorStreak >= 2) {
     account.rateLimitedUntil = Date.now() + 5 * 60 * 1000;
-    log.warn(`Account ${account.id} (${account.email}) quarantined 5min after ${account.internalErrorStreak} consecutive upstream internal errors`);
+    log.warn(`Account ${getAccountLogLabel(account)} quarantined 5min after ${account.internalErrorStreak} consecutive upstream internal errors`);
   }
 }
 
@@ -757,7 +795,7 @@ export async function fetchUserStatus(id) {
   try {
     status = await client.getUserStatus();
   } catch (err) {
-    log.warn(`GetUserStatus ${account.id} (${account.email}) failed: ${err.message}`);
+    log.warn(`GetUserStatus ${getAccountLogLabel(account)} failed: ${err.message}`);
     return null;
   }
 
@@ -807,9 +845,9 @@ export async function fetchUserStatus(id) {
   }
 
   if (prevTier !== account.tier) {
-    log.info(`Tier change ${account.id} (${account.email}): ${prevTier} → ${account.tier} (plan="${status.planName}", ${status.allowedModels.length} allowed models)`);
+    log.info(`Tier change ${getAccountLogLabel(account)}: ${prevTier} → ${account.tier} (plan="${status.planName}", ${status.allowedModels.length} allowed models)`);
   } else {
-    log.info(`UserStatus ${account.id} (${account.email}): tier=${account.tier} plan="${status.planName}" allowed=${status.allowedModels.length}`);
+    log.info(`UserStatus ${getAccountLogLabel(account)}: tier=${account.tier} plan="${status.planName}" allowed=${status.allowedModels.length}`);
   }
   saveAccounts();
   return status;
@@ -872,7 +910,7 @@ export async function probeAccount(id) {
   });
 
   if (needsProbe.length > 0) {
-    log.info(`Probing account ${account.id} (${account.email}) across ${needsProbe.length} canary models (GetUserStatus ${status ? 'OK' : 'unavailable'})`);
+    log.info(`Probing account ${getAccountLogLabel(account)} across ${needsProbe.length} canary models (GetUserStatus ${status ? 'OK' : 'unavailable'})`);
 
     for (const modelKey of needsProbe) {
       const info = getModelInfo(modelKey);

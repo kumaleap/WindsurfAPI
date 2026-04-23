@@ -5,7 +5,7 @@
 
 import { randomUUID } from 'crypto';
 import { WindsurfClient } from '../client.js';
-import { getApiKey, acquireAccountByKey, reportError, reportSuccess, markRateLimited, reportInternalError, updateCapability, getAccountList, isAllRateLimited, cooldownAccountModel } from '../auth.js';
+import { getApiKey, acquireAccountByKey, reportError, reportSuccess, markRateLimited, reportInternalError, updateCapability, getAccountList, isAllRateLimited, cooldownAccountModel, getAccountLogLabel } from '../auth.js';
 import { resolveModel, getModelInfo } from '../models.js';
 import { getLsFor, ensureLs } from '../langserver.js';
 import { config, log } from '../config.js';
@@ -213,12 +213,45 @@ function buildIdentitySystemMessage(displayModel, provider) {
   return template.replace(/\{model\}/g, displayModel);
 }
 
-function buildReplyLanguageSystemMessage() {
-  return [
+function contentToPlainText(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map((part) => {
+      if (typeof part?.text === 'string') return part.text;
+      if (typeof part?.image_url?.url === 'string') return '[image]';
+      if (typeof part?.image_url === 'string') return '[image]';
+      return '';
+    }).join('\n');
+  }
+  return '';
+}
+
+function getLastHumanUserMessageExcerpt(messages) {
+  if (!Array.isArray(messages)) return '';
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg?.role !== 'user') continue;
+    const text = contentToPlainText(msg.content).trim();
+    if (!text) continue;
+    return text.replace(/\s+/g, ' ').slice(0, 320);
+  }
+  return '';
+}
+
+function buildReplyLanguageSystemMessage(lastHumanUserExcerpt = '') {
+  const lines = [
     'Reply in the same natural language as the user\'s most recent message unless they explicitly ask for a different language.',
     'Do not switch languages just because prior context, tool instructions, or system scaffolding use another language.',
+    'When tool results or synthetic user turns are present, ignore them for language selection. Base the reply language on the original end-user request instead.',
     'Preserve code, commands, identifiers, file paths, API fields, and other literal snippets exactly as provided.',
-  ].join('\n');
+  ];
+  if (lastHumanUserExcerpt) {
+    lines.push('Latest real end-user request excerpt:');
+    lines.push('```text');
+    lines.push(lastHumanUserExcerpt);
+    lines.push('```');
+  }
+  return lines.join('\n');
 }
 
 function genId() {
@@ -381,7 +414,8 @@ export async function handleChatCompletions(body) {
     : [...messages];
   const inputChars = estimateMessageChars(messages);
   const outputGuard = buildOutputGuardSystemMessage(modelKey, max_tokens, emulateTools, inputChars);
-  const replyLanguageGuard = buildReplyLanguageSystemMessage();
+  const lastHumanUserExcerpt = getLastHumanUserMessageExcerpt(messages);
+  const replyLanguageGuard = buildReplyLanguageSystemMessage(lastHumanUserExcerpt);
 
   if (replyLanguageGuard) {
     cascadeMessages = [{ role: 'system', content: replyLanguageGuard }, ...cascadeMessages];
@@ -506,12 +540,12 @@ export async function handleChatCompletions(body) {
         const px = getEffectiveProxy(acct.id) || null;
         const rl = await checkMessageRateLimit(acct.apiKey, px);
         if (!rl.hasCapacity) {
-          log.warn(`Preflight: ${acct.email} has no capacity (remaining=${rl.messagesRemaining}), skipping`);
+          log.warn(`Preflight: ${getAccountLogLabel(acct)} has no capacity (remaining=${rl.messagesRemaining}), skipping`);
           markRateLimited(acct.apiKey, 5 * 60 * 1000, modelKey);
           continue;
         }
       } catch (e) {
-        log.debug(`Preflight check failed for ${acct.email}: ${e.message}`);
+        log.debug(`Preflight check failed for ${getAccountLogLabel(acct)}: ${e.message}`);
         // Fail open — proceed with the request
       }
     }
@@ -529,7 +563,7 @@ export async function handleChatCompletions(body) {
       const c = m?.content;
       return n + (typeof c === 'string' ? c.length : Array.isArray(c) ? c.reduce((k, p) => k + (typeof p?.text === 'string' ? p.text.length : 0), 0) : 0);
     }, 0);
-    log.info(`Chat: model=${displayModel} flow=${useCascade ? 'cascade' : 'legacy'} attempt=${attempt + 1} account=${acct.email} ls=${ls.port} turns=${(messages||[]).length} chars=${_msgChars}${reuseEntry ? ' reuse=1' : ''}${emulateTools ? ' tools=emu' : ''}`);
+    log.info(`Chat: model=${displayModel} flow=${useCascade ? 'cascade' : 'legacy'} attempt=${attempt + 1} account=${getAccountLogLabel(acct)} ls=${ls.port} turns=${(messages||[]).length} chars=${_msgChars}${reuseEntry ? ' reuse=1' : ''}${emulateTools ? ' tools=emu' : ''}`);
     const client = new WindsurfClient(acct.apiKey, ls.port, ls.csrfToken);
     const result = await nonStreamResponse(
       client, chatId, created, displayModel, modelKey, messages, cascadeMessages, modelEnum, modelUid,
@@ -543,16 +577,16 @@ export async function handleChatCompletions(body) {
     const errType = result.body?.error?.type;
     // Rate limit: this account is done for this model, try the next one
     if (errType === 'rate_limit_exceeded') {
-      log.warn(`Account ${acct.email} rate-limited on ${displayModel}, trying next account`);
+      log.warn(`Account ${getAccountLogLabel(acct)} rate-limited on ${displayModel}, trying next account`);
       continue;
     }
     // Model not available on this account (permission_denied, etc.)
     if (errType === 'model_not_available' && !isOutputLimitMessage(result.body?.error?.message || '')) {
-      log.warn(`Account ${acct.email} cannot serve ${displayModel}, trying next account`);
+      log.warn(`Account ${getAccountLogLabel(acct)} cannot serve ${displayModel}, trying next account`);
       continue;
     }
     if (shouldRetryNonStreamResult(result)) {
-      log.warn(`Account ${acct.email} hit retryable upstream error on ${displayModel}, trying next account`);
+      log.warn(`Account ${getAccountLogLabel(acct)} hit retryable upstream error on ${displayModel}, trying next account`);
       continue;
     }
     break; // other errors (502, transport) — don't retry
@@ -988,12 +1022,12 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
               const px = getEffectiveProxy(acct.id) || null;
               const rl = await checkMessageRateLimit(acct.apiKey, px);
               if (!rl.hasCapacity) {
-                log.warn(`Preflight: ${acct.email} has no capacity (remaining=${rl.messagesRemaining}), skipping`);
+                log.warn(`Preflight: ${getAccountLogLabel(acct)} has no capacity (remaining=${rl.messagesRemaining}), skipping`);
                 markRateLimited(acct.apiKey, 5 * 60 * 1000, modelKey);
                 continue;
               }
             } catch (e) {
-              log.debug(`Preflight check failed for ${acct.email}: ${e.message}`);
+              log.debug(`Preflight check failed for ${getAccountLogLabel(acct)}: ${e.message}`);
             }
           }
 
@@ -1005,7 +1039,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
             reuseEntry = null;
           }
           const _msgCharsStream = estimateMessageChars(messages);
-          log.info(`Chat: model=${model} flow=${useCascade ? 'cascade' : 'legacy'} stream=true attempt=${attempt + 1} account=${acct.email} ls=${ls.port} turns=${(messages||[]).length} chars=${_msgCharsStream}${reuseEntry ? ' reuse=1' : ''}`);
+          log.info(`Chat: model=${model} flow=${useCascade ? 'cascade' : 'legacy'} stream=true attempt=${attempt + 1} account=${getAccountLogLabel(acct)} ls=${ls.port} turns=${(messages||[]).length} chars=${_msgCharsStream}${reuseEntry ? ' reuse=1' : ''}`);
           const client = new WindsurfClient(acct.apiKey, ls.port, ls.csrfToken);
           let cascadeResult = null;
 
@@ -1109,7 +1143,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
                   : failure.isPermanentModel
                     ? 'model_error'
                     : 'upstream_error';
-              log.warn(`Account ${acct.email} failed (${tag}) on ${model}, trying next`);
+              log.warn(`Account ${getAccountLogLabel(acct)} failed (${tag}) on ${model}, trying next`);
               continue;
             }
             slog.warn('Stopping stream retries after visible output or non-retryable error', {
