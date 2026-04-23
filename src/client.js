@@ -43,6 +43,11 @@ function contentToString(content) {
   return content == null ? '' : JSON.stringify(content);
 }
 
+function renderCascadeHistoryTurn(role, content) {
+  const safeRole = role === 'assistant' ? 'assistant' : 'user';
+  return `<turn role="${safeRole}">\n${content}\n</turn>`;
+}
+
 function getCascadeSessionState(lsEntry, apiKey, force = false) {
   if (!lsEntry || !apiKey) return null;
   if (!lsEntry.cascadeSessions) lsEntry.cascadeSessions = new Map();
@@ -351,15 +356,23 @@ export class WindsurfClient {
           const last = convo[convo.length - 1];
           text = last ? contentToString(last.content) : '';
         } else {
-          const lines = [];
+          const history = [];
           for (let i = 0; i < convo.length - 1; i++) {
             const m = convo[i];
-            const label = m.role === 'user' ? 'User' : 'Assistant';
-            lines.push(`${label}: ${contentToString(m.content)}`);
+            history.push(renderCascadeHistoryTurn(m.role, contentToString(m.content)));
           }
           const latest = convo[convo.length - 1];
           const latestText = latest ? contentToString(latest.content) : '';
-          text = `[Conversation so far]\n${lines.join('\n\n')}\n\n[Current user message]\n${latestText}`;
+          text = [
+            '<conversation_context>',
+            'Use the wrapped turns below as prior context only. Do not repeat the wrapper tags or role attributes in your answer.',
+            ...history,
+            '</conversation_context>',
+            '',
+            '<current_user_message>',
+            latestText,
+            '</current_user_message>',
+          ].join('\n');
         }
         if (sysText) text = sysText + '\n\n' + text;
       }

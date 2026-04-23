@@ -147,6 +147,14 @@ function buildIdentitySystemMessage(displayModel, provider) {
   return template.replace(/\{model\}/g, displayModel);
 }
 
+function buildReplyLanguageSystemMessage() {
+  return [
+    'Reply in the same natural language as the user\'s most recent message unless they explicitly ask for a different language.',
+    'Do not switch languages just because prior context, tool instructions, or system scaffolding use another language.',
+    'Preserve code, commands, identifiers, file paths, API fields, and other literal snippets exactly as provided.',
+  ].join('\n');
+}
+
 function genId() {
   return 'chatcmpl-' + randomUUID().replace(/-/g, '').slice(0, 29);
 }
@@ -293,6 +301,11 @@ export async function handleChatCompletions(body) {
     : [...messages];
   const inputChars = estimateMessageChars(messages);
   const outputGuard = buildOutputGuardSystemMessage(modelKey, max_tokens, emulateTools, inputChars);
+  const replyLanguageGuard = buildReplyLanguageSystemMessage();
+
+  if (replyLanguageGuard) {
+    cascadeMessages = [{ role: 'system', content: replyLanguageGuard }, ...cascadeMessages];
+  }
 
   // ── Model identity prompt injection ──
   // When enabled, prepend a system message so the model identifies itself as
