@@ -26,8 +26,30 @@ function save() {
   } catch {}
 }
 
+function maskProxy(cfg) {
+  if (!cfg) return cfg;
+  const { password, ...rest } = cfg;
+  return { ...rest, hasPassword: !!password };
+}
+
+function mergePassword(nextCfg, prevCfg) {
+  if (!nextCfg || !Object.prototype.hasOwnProperty.call(nextCfg, 'password')) {
+    return prevCfg?.password || '';
+  }
+  return nextCfg.password || '';
+}
+
 export function getProxyConfig() {
   return { ..._config };
+}
+
+export function getProxyConfigMasked() {
+  return {
+    global: maskProxy(_config.global),
+    perAccount: Object.fromEntries(
+      Object.entries(_config.perAccount).map(([accountId, cfg]) => [accountId, maskProxy(cfg)])
+    ),
+  };
 }
 
 export function setGlobalProxy(cfg) {
@@ -36,7 +58,7 @@ export function setGlobalProxy(cfg) {
     host: cfg.host,
     port: parseInt(cfg.port, 10) || 8080,
     username: cfg.username || '',
-    password: cfg.password || '',
+    password: mergePassword(cfg, _config.global),
   } : null;
   save();
 }
@@ -48,7 +70,7 @@ export function setAccountProxy(accountId, cfg) {
       host: cfg.host,
       port: parseInt(cfg.port, 10) || 8080,
       username: cfg.username || '',
-      password: cfg.password || '',
+      password: mergePassword(cfg, _config.perAccount[accountId]),
     };
   } else {
     delete _config.perAccount[accountId];

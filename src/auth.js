@@ -9,7 +9,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, renameSync, unlinkSync } from 'fs';
 import { config, log } from './config.js';
 import { getEffectiveProxy } from './dashboard/proxy-config.js';
 import { getTierModels, getModelKeysByEnum, MODELS } from './models.js';
@@ -42,23 +42,44 @@ function pruneRpmHistory(account, now) {
   return account._rpmHistory.length;
 }
 
+let _saveInFlight = false;
+let _savePending = false;
+
+function serializeAccounts() {
+  return accounts.map(a => ({
+    id: a.id, email: a.email, apiKey: a.apiKey,
+    apiServerUrl: a.apiServerUrl, method: a.method,
+    status: a.status, addedAt: a.addedAt,
+    tier: a.tier, tierManual: !!a.tierManual,
+    capabilities: a.capabilities, lastProbed: a.lastProbed,
+    credits: a.credits || null,
+    blockedModels: a.blockedModels || [],
+    refreshToken: a.refreshToken || '',
+    // From GetUserStatus — the authoritative tier/entitlement snapshot.
+    userStatus: a.userStatus || null,
+    userStatusLastFetched: a.userStatusLastFetched || 0,
+  }));
+}
+
 function saveAccounts() {
+  if (_saveInFlight) {
+    _savePending = true;
+    return;
+  }
+  _saveInFlight = true;
+  const tempFile = ACCOUNTS_FILE + '.tmp';
   try {
-    const data = accounts.map(a => ({
-      id: a.id, email: a.email, apiKey: a.apiKey,
-      apiServerUrl: a.apiServerUrl, method: a.method,
-      status: a.status, addedAt: a.addedAt,
-      tier: a.tier, capabilities: a.capabilities, lastProbed: a.lastProbed,
-      credits: a.credits || null,
-      blockedModels: a.blockedModels || [],
-      refreshToken: a.refreshToken || '',
-      // From GetUserStatus — the authoritative tier/entitlement snapshot.
-      userStatus: a.userStatus || null,
-      userStatusLastFetched: a.userStatusLastFetched || 0,
-    }));
-    writeFileSync(ACCOUNTS_FILE, JSON.stringify(data, null, 2));
+    writeFileSync(tempFile, JSON.stringify(serializeAccounts(), null, 2));
+    renameSync(tempFile, ACCOUNTS_FILE);
   } catch (e) {
     log.error('Failed to save accounts:', e.message);
+    try { unlinkSync(tempFile); } catch {}
+  } finally {
+    _saveInFlight = false;
+    if (_savePending) {
+      _savePending = false;
+      setImmediate(saveAccounts);
+    }
   }
 }
 
@@ -78,6 +99,7 @@ function loadAccounts() {
         refreshToken: a.refreshToken || '', expiresAt: 0, refreshTimer: null,
         addedAt: a.addedAt || Date.now(),
         tier: a.tier || 'unknown',
+        tierManual: !!a.tierManual,
         capabilities: a.capabilities || {},
         lastProbed: a.lastProbed || 0,
         credits: a.credits || null,

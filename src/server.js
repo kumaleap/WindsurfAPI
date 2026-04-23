@@ -28,6 +28,7 @@ import { config, log } from './config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
+const MAX_BODY_SIZE = 10 * 1024 * 1024;
 
 // Cache version info at boot — git queries are slow and this never changes
 // until a restart (and self-update restarts us, so always fresh).
@@ -50,7 +51,16 @@ const VERSION_INFO = (() => {
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on('data', c => chunks.push(c));
+    let size = 0;
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > MAX_BODY_SIZE) {
+        req.destroy();
+        reject(Object.assign(new Error('Request body too large'), { statusCode: 413 }));
+        return;
+      }
+      chunks.push(c);
+    });
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
     req.on('error', reject);
   });
@@ -124,7 +134,11 @@ async function route(req, res) {
   if (path.startsWith('/dashboard/api/')) {
     let body = {};
     if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
-      try { body = JSON.parse(await readBody(req)); } catch {}
+      try {
+        body = JSON.parse(await readBody(req));
+      } catch (err) {
+        if (err?.statusCode === 413) return json(res, 413, { error: 'Request body too large' });
+      }
     }
     const subpath = path.slice('/dashboard/api'.length);
     return handleDashboardApi(method, subpath, body, req, res);
@@ -149,7 +163,8 @@ async function route(req, res) {
 
   if (path === '/auth/login' && method === 'POST') {
     let body;
-    try { body = JSON.parse(await readBody(req)); } catch {
+    try { body = JSON.parse(await readBody(req)); } catch (err) {
+      if (err?.statusCode === 413) return json(res, 413, { error: 'Request body too large' });
       return json(res, 400, { error: 'Invalid JSON' });
     }
 
@@ -219,7 +234,10 @@ async function route(req, res) {
     }
 
     let body;
-    try { body = JSON.parse(await readBody(req)); } catch {
+    try { body = JSON.parse(await readBody(req)); } catch (err) {
+      if (err?.statusCode === 413) {
+        return json(res, 413, { error: { message: 'Request body too large', type: 'invalid_request' } });
+      }
       return json(res, 400, { error: { message: 'Invalid JSON', type: 'invalid_request' } });
     }
 
@@ -242,7 +260,10 @@ async function route(req, res) {
     }
 
     let body;
-    try { body = JSON.parse(await readBody(req)); } catch {
+    try { body = JSON.parse(await readBody(req)); } catch (err) {
+      if (err?.statusCode === 413) {
+        return json(res, 413, { error: { message: 'Request body too large', type: 'invalid_request' } });
+      }
       return json(res, 400, { error: { message: 'Invalid JSON', type: 'invalid_request' } });
     }
     if (!Array.isArray(body.messages)) {
@@ -269,7 +290,10 @@ async function route(req, res) {
       return json(res, 503, { type: 'error', error: { type: 'api_error', message: 'No active accounts' } });
     }
     let body;
-    try { body = JSON.parse(await readBody(req)); } catch {
+    try { body = JSON.parse(await readBody(req)); } catch (err) {
+      if (err?.statusCode === 413) {
+        return json(res, 413, { type: 'error', error: { type: 'invalid_request_error', message: 'Request body too large' } });
+      }
       return json(res, 400, { type: 'error', error: { type: 'invalid_request_error', message: 'Invalid JSON' } });
     }
     const result = handleCountTokens(body);
@@ -282,7 +306,10 @@ async function route(req, res) {
       return json(res, 503, { type: 'error', error: { type: 'api_error', message: 'No active accounts' } });
     }
     let body;
-    try { body = JSON.parse(await readBody(req)); } catch {
+    try { body = JSON.parse(await readBody(req)); } catch (err) {
+      if (err?.statusCode === 413) {
+        return json(res, 413, { type: 'error', error: { type: 'invalid_request_error', message: 'Request body too large' } });
+      }
       return json(res, 400, { type: 'error', error: { type: 'invalid_request_error', message: 'Invalid JSON' } });
     }
     if (!Array.isArray(body.messages) || body.messages.length === 0) {
@@ -312,7 +339,13 @@ export function startServer() {
       await route(req, res);
     } catch (err) {
       log.error('Handler error:', err);
-      if (!res.headersSent) json(res, 500, { error: { message: 'Internal error', type: 'server_error' } });
+      if (!res.headersSent) {
+        if (err?.statusCode === 413) {
+          json(res, 413, { error: { message: 'Request body too large', type: 'invalid_request' } });
+        } else {
+          json(res, 500, { error: { message: 'Internal error', type: 'server_error' } });
+        }
+      }
     }
   });
 

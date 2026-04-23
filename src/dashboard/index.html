@@ -1558,6 +1558,7 @@ const App = {
   pollers: {},
   allModels: [],
   modelAccessConfig: { mode: 'all', list: [] },
+  proxyConfig: { global: null, perAccount: {} },
   loginHistory: JSON.parse(localStorage.getItem('wl_history') || '[]'),
   _filterTimer: null,
 
@@ -2610,16 +2611,23 @@ const App = {
   // ─── Proxy ───────────────────────────────────
   async loadProxy() {
     const d = await this.api('GET', '/proxy');
+    this.proxyConfig = {
+      global: d.global || null,
+      perAccount: d.perAccount || {},
+    };
     if (d.global) {
       document.getElementById('proxy-type').value = d.global.type || 'http';
       document.getElementById('proxy-host').value = (d.global.host || '').replace(/:\d+$/, '');
       document.getElementById('proxy-port').value = d.global.port || '';
       document.getElementById('proxy-user').value = d.global.username || '';
-      document.getElementById('proxy-pass').value = d.global.password || '';
+      document.getElementById('proxy-pass').value = '';
+      document.getElementById('proxy-pass').placeholder = d.global.hasPassword ? '已保存（留空保持原值）' : '代理认证密码';
       const h = (d.global.host || '').replace(/:\d+$/, '');
       const authInfo = d.global.username ? `（认证：${d.global.username}）` : '';
       document.getElementById('proxy-current').textContent = `当前：${d.global.type}://${h}:${d.global.port}${authInfo}`;
     } else {
+      document.getElementById('proxy-pass').value = '';
+      document.getElementById('proxy-pass').placeholder = '代理认证密码';
       document.getElementById('proxy-current').textContent = '未配置全局代理';
     }
     const accts = await this.api('GET', '/accounts');
@@ -2646,8 +2654,9 @@ const App = {
       host: document.getElementById('proxy-host').value.trim(),
       port: document.getElementById('proxy-port').value,
       username: document.getElementById('proxy-user').value,
-      password: document.getElementById('proxy-pass').value,
     };
+    const pwInput = document.getElementById('proxy-pass').value;
+    if (pwInput || !this.proxyConfig?.global?.hasPassword) cfg.password = pwInput;
     if (!cfg.host) return this.toast('请输入代理主机', 'error');
     await this.api('PUT', '/proxy/global', cfg);
     this.toast('全局代理已保存');
@@ -2662,6 +2671,7 @@ const App = {
   },
 
   async editAccountProxy(id, label) {
+    const currentProxy = this.proxyConfig?.perAccount?.[id] || null;
     const values = await this.prompt(
       `配置账号代理`,
       `为账号 ${label} 设置独立代理`,
@@ -2671,20 +2681,21 @@ const App = {
           { value: 'https', label: 'HTTPS' },
           { value: 'socks5', label: 'SOCKS5' },
         ]},
-        { name: 'host', label: '主机', placeholder: '例如 proxy.example.com' },
-        { name: 'port', label: '端口', type: 'number', placeholder: '8080' },
-        { name: 'username', label: '用户名', placeholder: '可选' },
-        { name: 'password', label: '密码', type: 'password', placeholder: '可选' },
+        { name: 'host', label: '主机', value: currentProxy?.host || '', placeholder: '例如 proxy.example.com' },
+        { name: 'port', label: '端口', type: 'number', value: currentProxy?.port || '', placeholder: '8080' },
+        { name: 'username', label: '用户名', value: currentProxy?.username || '', placeholder: '可选' },
+        { name: 'password', label: '密码', type: 'password', placeholder: currentProxy?.hasPassword ? '已保存（留空保持原值）' : '可选' },
       ]
     );
     if (!values || !values.host) return;
-    await this.api('PUT', `/proxy/accounts/${id}`, {
+    const cfg = {
       type: values.type || 'http',
       host: values.host,
       port: parseInt(values.port) || 8080,
       username: values.username || '',
-      password: values.password || '',
-    });
+    };
+    if (values.password || !currentProxy?.hasPassword) cfg.password = values.password || '';
+    await this.api('PUT', `/proxy/accounts/${id}`, cfg);
     this.toast('账号代理已配置');
     this.loadProxy();
   },
