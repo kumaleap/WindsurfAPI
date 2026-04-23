@@ -1898,21 +1898,18 @@ const App = {
 
   async loadOverview() {
     const d = await this.api('GET', '/overview');
-    // Fetch /health (no auth) in parallel for version/commit info
-    try {
-      const h = await fetch('/health').then(r => r.json()).catch(() => null);
-      if (h) {
-        const sv = document.getElementById('sidebar-ver');
-        if (sv) {
-          const label = h.commit ? `v${h.version} · ${h.commit}` : `v${h.version}`;
-          sv.textContent = label;
-          sv.title = h.commitMessage
-            ? `${h.commitMessage}\n${h.commitDate || ''}${h.branch ? ` (${h.branch})` : ''}`
-            : `版本 ${h.version}`;
-        }
-        this._versionInfo = h;
+    const versionInfo = d.versionInfo || null;
+    if (versionInfo) {
+      const sv = document.getElementById('sidebar-ver');
+      if (sv) {
+        const label = versionInfo.commit ? `v${versionInfo.version} · ${versionInfo.commit}` : `v${versionInfo.version}`;
+        sv.textContent = label;
+        sv.title = versionInfo.commitMessage
+          ? `${versionInfo.commitMessage}\n${versionInfo.commitDate || ''}${versionInfo.branch ? ` (${versionInfo.branch})` : ''}`
+          : `版本 ${versionInfo.version}`;
       }
-    } catch {}
+      this._versionInfo = versionInfo;
+    }
     const uptime = d.uptime ? this.fmtDuration(d.uptime) : '-';
     const ls = d.langServer || {};
     const poolCount = (ls.instances || []).length || (ls.running ? 1 : 0);
