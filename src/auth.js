@@ -797,7 +797,7 @@ export async function fetchUserStatus(id) {
         if (!prev || prev.reason !== 'success') {
           // Respect a previously-validated success (can happen if allowlist is
           // cascade-only while the model was reached via legacy endpoint).
-          account.capabilities[key] = { ok: false, lastCheck: Date.now(), reason: 'not_entitled' };
+          account.capabilities[key] = { ok: false, lastCheck: Date.now(), reason: 'model_not_entitled' };
         }
       }
     }
@@ -863,7 +863,7 @@ export async function probeAccount(id) {
     if (status && info.enumValue > 0) {
       const cap = account.capabilities?.[key];
       if (cap && cap.reason === 'user_status') return false;
-      if (cap && cap.reason === 'not_entitled') return false;
+      if (cap && cap.reason === 'model_not_entitled') return false;
     }
     return true;
   });
