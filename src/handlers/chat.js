@@ -81,6 +81,21 @@ function estimateMessageChars(messages) {
   return chars;
 }
 
+function getCacheSkipReason({ text = '', thinking = '', messages, useCascade, toolCalls = 0 }) {
+  const textChars = String(text || '').trim().length;
+  const thinkingChars = String(thinking || '').trim().length;
+  if (toolCalls > 0) return 'tool_calls';
+  if (!textChars && !thinkingChars) return 'empty';
+  if (!useCascade) return null;
+
+  const inputChars = estimateMessageChars(messages);
+  if (inputChars >= 120_000 && textChars < 400) return 'short_for_long_context';
+  if (inputChars >= 40_000 && textChars < 200) return 'short_for_long_context';
+  if (inputChars >= 10_000 && textChars < 120) return 'short_for_long_context';
+  if (inputChars >= 4_000 && textChars < 80) return 'short_for_long_context';
+  return null;
+}
+
 function isOutputLimitError(err) {
   return /maximum output token limit|max output token/i.test(err?.message || '');
 }
@@ -726,10 +741,21 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
     recordRequest(model, true, Date.now() - startTime, apiKey);
 
     // Store in cache for next identical request. Skip caching tool_call
-    // responses — they're inherently contextual and the cache doesn't
-    // preserve the tool_calls array, so a cache hit would return a
-    // content-only response with finish_reason:stop, breaking tool flow.
-    if (ckey && !toolCalls.length) cacheSet(ckey, { text: allText, thinking: allThinking });
+    // responses and suspiciously short long-context stop replies — a cache hit
+    // would otherwise fossilize what was likely an upstream early-stop or thin
+    // completion.
+    const nonStreamCacheSkipReason = getCacheSkipReason({
+      text: allText,
+      thinking: allThinking,
+      messages,
+      useCascade,
+      toolCalls: toolCalls.length,
+    });
+    if (ckey && !nonStreamCacheSkipReason) {
+      cacheSet(ckey, { text: allText, thinking: allThinking });
+    } else if (ckey && nonStreamCacheSkipReason) {
+      log.info(`Cache skipped for non-stream reply: ${nonStreamCacheSkipReason}`);
+    }
 
     const message = { role: 'assistant', content: allText || null };
     if (allThinking) message.reasoning_content = allThinking;
@@ -1224,6 +1250,13 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
             const finalReason = collectedToolCalls.length ? 'tool_calls' : 'stop';
             streamMetrics.finishedBy = finalReason;
             const finalUsage = buildUsageBody(cascadeResult?.usage || null, messages, accText, accThinking);
+            const streamCacheSkipReason = getCacheSkipReason({
+              text: accText,
+              thinking: accThinking,
+              messages,
+              useCascade,
+              toolCalls: collectedToolCalls.length,
+            });
             send({ id, object: 'chat.completion.chunk', created, model,
               choices: [{ index: 0, delta: {}, finish_reason: finalReason }],
               usage: finalUsage });
@@ -1233,14 +1266,15 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
                 choices: [], usage });
             }
             if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
-            if (ckey && !collectedToolCalls.length && (accText || accThinking)) {
+            if (ckey && !streamCacheSkipReason) {
               cacheSet(ckey, { text: accText, thinking: accThinking });
             }
             slog.info('Stream completed', {
               ...summarizeStreamMetrics(streamMetrics),
               upstreamTimings: cascadeResult?.timings || null,
               usageSource: cascadeResult?.usage ? 'server' : 'estimated',
-              cacheStored: !!(ckey && !collectedToolCalls.length && (accText || accThinking)),
+              cacheStored: !!(ckey && !streamCacheSkipReason),
+              cacheSkipReason: streamCacheSkipReason || null,
               textChars: accText.length,
               thinkingChars: accThinking.length,
               toolCalls: collectedToolCalls.length,
