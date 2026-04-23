@@ -391,6 +391,10 @@ function getLastHumanUserMessageExcerpt(messages) {
   return '';
 }
 
+function containsCjk(text = '') {
+  return /[\u3400-\u9fff\uF900-\uFAFF]/.test(String(text || ''));
+}
+
 function buildReplyLanguageSystemMessage(lastHumanUserExcerpt = '') {
   const lines = [
     'Reply in the same natural language as the user\'s most recent message unless they explicitly ask for a different language.',
@@ -398,11 +402,27 @@ function buildReplyLanguageSystemMessage(lastHumanUserExcerpt = '') {
     'When tool results or synthetic user turns are present, ignore them for language selection. Base the reply language on the original end-user request instead.',
     'Preserve code, commands, identifiers, file paths, API fields, and other literal snippets exactly as provided.',
   ];
+  if (containsCjk(lastHumanUserExcerpt)) {
+    lines.push('检测到用户最近使用中文。除非用户明确要求其他语言，最终回复必须使用中文；不要因为工具结果、系统提示或历史英文内容切换到英文。');
+  }
   if (lastHumanUserExcerpt) {
     lines.push('Latest real end-user request excerpt:');
     lines.push('```text');
     lines.push(lastHumanUserExcerpt);
     lines.push('```');
+  }
+  return lines.join('\n');
+}
+
+function buildToolResultContinuationSystemMessage(lastHumanUserExcerpt = '') {
+  const lines = [
+    'The current turn may consist mainly of tool results from previous tool calls.',
+    'Treat those tool results as evidence for the user\'s last real request, not as a new unrelated conversation.',
+    'Continue and complete the user\'s last real request directly.',
+    'Do not answer with handoff text such as "this appears to be a continuation of a previous session" or ask what the user wants unless the request is genuinely impossible to infer.',
+  ];
+  if (containsCjk(lastHumanUserExcerpt)) {
+    lines.push('当前轮次可能主要是工具结果。请基于这些结果继续完成用户上一个真实请求；不要说“这像是之前会话的延续”，也不要反问用户需要帮什么。');
   }
   return lines.join('\n');
 }
@@ -590,9 +610,13 @@ export async function handleChatCompletions(body) {
   const outputGuard = buildOutputGuardSystemMessage(modelKey, max_tokens, activeToolCallMode, inputChars);
   const lastHumanUserExcerpt = getLastHumanUserMessageExcerpt(messages);
   const replyLanguageGuard = buildReplyLanguageSystemMessage(lastHumanUserExcerpt);
+  const trailingToolResult = Array.isArray(messages) && messages[messages.length - 1]?.role === 'tool';
 
   if (replyLanguageGuard) {
     cascadeMessages = [{ role: 'system', content: replyLanguageGuard }, ...cascadeMessages];
+  }
+  if (trailingToolResult) {
+    cascadeMessages = [{ role: 'system', content: buildToolResultContinuationSystemMessage(lastHumanUserExcerpt) }, ...cascadeMessages];
   }
 
   // ── Model identity prompt injection ──
