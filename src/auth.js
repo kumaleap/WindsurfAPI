@@ -21,6 +21,8 @@ const ACCOUNTS_FILE = join(process.cwd(), 'accounts.json');
 
 const accounts = [];
 let _roundRobinIndex = 0;
+const PERMANENT_MODEL_BLOCK_TTL_MS = 6 * 60 * 60 * 1000;
+const FREE_TIER_CANARIES = ['gpt-4o-mini', 'gemini-2.5-flash'];
 
 // Per-tier requests-per-minute limits. Used for both filter-by-cap and
 // weighted selection (accounts with more headroom are preferred).
@@ -216,14 +218,19 @@ export function isModelAllowedForAccount(account, modelKey) {
   if (!tierModels.includes(modelKey)) return false;
   const blocked = account.blockedModels || [];
   if (blocked.includes(modelKey)) return false;
+  const cap = account.capabilities?.[modelKey];
+  if (cap?.ok === false
+    && (cap.reason === 'model_not_allowed' || cap.reason === 'model_not_entitled')
+    && (Date.now() - (cap.lastCheck || 0)) < PERMANENT_MODEL_BLOCK_TTL_MS) {
+    return false;
+  }
   return true;
 }
 
 /** List of model keys this account is currently allowed to call. */
 export function getAvailableModelsForAccount(account) {
   const tierModels = getTierModels(account.tier || 'unknown');
-  const blocked = new Set(account.blockedModels || []);
-  return tierModels.filter(m => !blocked.has(m));
+  return tierModels.filter((modelKey) => isModelAllowedForAccount(account, modelKey));
 }
 
 /**
@@ -333,6 +340,7 @@ export function getApiKey(excludeKeys = [], modelKey = null) {
     if (a.status !== 'active') continue;
     if (excludeKeys.includes(a.apiKey)) continue;
     if (isRateLimitedForModel(a, modelKey, now)) continue;
+    if (isTemporarilyCoolingModel(a, modelKey, now)) continue;
     const limit = rpmLimitFor(a);
     if (limit <= 0) continue; // expired tier
     const used = pruneRpmHistory(a, now);
@@ -375,6 +383,7 @@ export function acquireAccountByKey(apiKey, modelKey = null) {
   if (!a) return null;
   if (a.status !== 'active') return null;
   if (isRateLimitedForModel(a, modelKey, now)) return null;
+  if (isTemporarilyCoolingModel(a, modelKey, now)) return null;
   const limit = rpmLimitFor(a);
   if (limit <= 0) return null;
   const used = pruneRpmHistory(a, now);
@@ -448,6 +457,18 @@ export function markRateLimited(apiKey, durationMs = 5 * 60 * 1000, modelKey = n
   }
 }
 
+export function cooldownAccountModel(apiKey, modelKey, durationMs = 30 * 1000, reason = 'transient_upstream') {
+  if (!apiKey || !modelKey) return;
+  const account = accounts.find(a => a.apiKey === apiKey);
+  if (!account) return;
+  if (!account._modelCooldowns) account._modelCooldowns = {};
+  account._modelCooldowns[modelKey] = {
+    until: Date.now() + durationMs,
+    reason,
+  };
+  log.warn(`Account ${account.id} (${account.email}) cooled down on ${modelKey} for ${Math.round(durationMs / 1000)}s (${reason})`);
+}
+
 /**
  * Check if an account is rate-limited for a specific model.
  */
@@ -461,6 +482,15 @@ function isRateLimitedForModel(account, modelKey, now) {
     // Clean up expired entries
     if (until && until <= now) delete account._modelRateLimits[modelKey];
   }
+  return false;
+}
+
+function isTemporarilyCoolingModel(account, modelKey, now) {
+  if (!modelKey || !account._modelCooldowns) return false;
+  const entry = account._modelCooldowns[modelKey];
+  if (!entry) return false;
+  if (entry.until > now) return true;
+  delete account._modelCooldowns[modelKey];
   return false;
 }
 
@@ -562,6 +592,11 @@ export function getAccountList() {
       modelRateLimits: a._modelRateLimits ? Object.fromEntries(
         Object.entries(a._modelRateLimits).filter(([, v]) => v > now)
       ) : {},
+      modelCooldowns: a._modelCooldowns ? Object.fromEntries(
+        Object.entries(a._modelCooldowns)
+          .filter(([, v]) => v?.until > now)
+          .map(([k, v]) => [k, v])
+      ) : {},
       rpmUsed,
       rpmLimit,
       credits: a.credits || null,
@@ -628,7 +663,8 @@ export async function refreshAllCredits() {
 
 /**
  * Update the capability of an account for a specific model.
- * reason: 'success' | 'model_error' | 'rate_limit' | 'transport_error'
+ * reason: 'success' | 'model_error' | 'model_not_allowed' |
+ *         'model_not_entitled' | 'rate_limit' | 'transport_error'
  */
 export function updateCapability(apiKey, modelKey, ok, reason = '') {
   const account = accounts.find(a => a.apiKey === apiKey);
@@ -655,8 +691,13 @@ function inferTier(caps) {
   const works = (m) => caps[m]?.ok === true;
   if (works('claude-opus-4.6') || works('claude-sonnet-4.6')) return 'pro';
   if (works('gemini-2.5-flash') || works('gpt-4o-mini')) return 'free';
-  const checked = Object.keys(caps);
-  if (checked.length > 0 && checked.every(m => caps[m].ok === false)) return 'expired';
+
+  const hasPermanentFailure = (m) => {
+    const cap = caps[m];
+    return cap?.ok === false
+      && (cap.reason === 'model_not_allowed' || cap.reason === 'model_not_entitled');
+  };
+  if (FREE_TIER_CANARIES.every(hasPermanentFailure)) return 'expired';
   return 'unknown';
 }
 

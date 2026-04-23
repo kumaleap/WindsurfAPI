@@ -5,7 +5,7 @@
 
 import { randomUUID } from 'crypto';
 import { WindsurfClient } from '../client.js';
-import { getApiKey, acquireAccountByKey, reportError, reportSuccess, markRateLimited, reportInternalError, updateCapability, getAccountList, isAllRateLimited } from '../auth.js';
+import { getApiKey, acquireAccountByKey, reportError, reportSuccess, markRateLimited, reportInternalError, updateCapability, getAccountList, isAllRateLimited, cooldownAccountModel } from '../auth.js';
 import { resolveModel, getModelInfo } from '../models.js';
 import { getLsFor, ensureLs } from '../langserver.js';
 import { config, log } from '../config.js';
@@ -47,6 +47,7 @@ const HAIKU_TOOL_OUTPUT_GUARD_INPUT_CHARS = 30_000;
 const LONG_TOOL_OUTPUT_GUARD_INPUT_CHARS = 120_000;
 const DEFAULT_HAIKU_OUTPUT_GUARD_TOKENS = 900;
 const DEFAULT_TOOL_OUTPUT_GUARD_TOKENS = 1200;
+const TRANSIENT_MODEL_COOLDOWN_MS = 45_000;
 
 function endsAtNaturalBoundary(text) {
   if (!text) return false;
@@ -80,6 +81,10 @@ function estimateMessageChars(messages) {
 
 function isOutputLimitError(err) {
   return /maximum output token limit|max output token/i.test(err?.message || '');
+}
+
+function isOutputLimitMessage(message = '') {
+  return /maximum output token limit|max output token/i.test(message);
 }
 
 function getPartialFinishReason(err) {
@@ -135,6 +140,67 @@ function classifyStreamError(err) {
   if (err?.isModelError) return 'model_error';
   if (msg) return 'upstream_error';
   return 'unknown';
+}
+
+function isPermanentModelPermissionMessage(message = '') {
+  return /(permission_denied:\s*model not allowed for user|model not allowed for user|model_not_entitled|未订阅或已被封禁)/i.test(message);
+}
+
+function isRetryableUpstreamMessage(message = '') {
+  return /(bad gateway|502|read econnreset|econnreset|socket hang up|panel state missing|retryable error from model provider|third-party model provider is experiencing issues|currently not available|temporarily unavailable|request timeout|upstream disconnected|fetch failed|timeout)/i.test(message);
+}
+
+function inspectFailure(err) {
+  const message = err?.message || '';
+  return {
+    message,
+    isAuthFail: /unauthenticated|invalid api key|invalid_grant|permission_denied.*account/i.test(message),
+    isRateLimit: /rate limit|rate_limit|too many requests|quota/i.test(message) || !!err?.isRateLimit,
+    isInternal: /(internal error occurred.*error id)/i.test(message),
+    isPermanentModel: isPermanentModelPermissionMessage(message),
+    isRetryableUpstream: isRetryableUpstreamMessage(message),
+    isOutputLimit: isOutputLimitMessage(message),
+  };
+}
+
+function applyFailurePolicy(apiKey, modelKey, err, { cooldownTransient = true } = {}) {
+  const failure = inspectFailure(err);
+  if (failure.isAuthFail) reportError(apiKey);
+  if (failure.isRateLimit) {
+    markRateLimited(apiKey, 5 * 60 * 1000, modelKey);
+    err.isRateLimit = true;
+    err.isModelError = true;
+  }
+  if (failure.isInternal) {
+    reportInternalError(apiKey);
+    err.isModelError = true;
+  }
+  if (failure.isPermanentModel) {
+    updateCapability(apiKey, modelKey, false, 'model_not_allowed');
+    err.isModelError = true;
+    err.isPermanentModelError = true;
+  }
+  if (cooldownTransient && modelKey && (failure.isInternal || failure.isRetryableUpstream) && !failure.isRateLimit) {
+    cooldownAccountModel(apiKey, modelKey, TRANSIENT_MODEL_COOLDOWN_MS, failure.isInternal ? 'internal_error' : 'transient_upstream');
+  }
+  return failure;
+}
+
+function shouldRetryBeforeVisibleOutput(err) {
+  const failure = inspectFailure(err);
+  return failure.isRateLimit || failure.isPermanentModel || failure.isInternal || failure.isRetryableUpstream;
+}
+
+function shouldRetryNonStreamResult(result) {
+  if (!result) return false;
+  if (result.status === 429) return true;
+  if (result.status >= 500) return true;
+  const message = result.body?.error?.message || '';
+  const type = result.body?.error?.type;
+  if (isOutputLimitMessage(message)) return false;
+  if (isPermanentModelPermissionMessage(message)) return true;
+  if (type === 'upstream_error' && isRetryableUpstreamMessage(message)) return true;
+  return false;
 }
 
 // ── Model identity prompt ──────────────────────────────────
@@ -441,7 +507,7 @@ export async function handleChatCompletions(body) {
         const rl = await checkMessageRateLimit(acct.apiKey, px);
         if (!rl.hasCapacity) {
           log.warn(`Preflight: ${acct.email} has no capacity (remaining=${rl.messagesRemaining}), skipping`);
-          markRateLimited(acct.id, modelKey);
+          markRateLimited(acct.apiKey, 5 * 60 * 1000, modelKey);
           continue;
         }
       } catch (e) {
@@ -481,8 +547,12 @@ export async function handleChatCompletions(body) {
       continue;
     }
     // Model not available on this account (permission_denied, etc.)
-    if (errType === 'model_not_available') {
+    if (errType === 'model_not_available' && !isOutputLimitMessage(result.body?.error?.message || '')) {
       log.warn(`Account ${acct.email} cannot serve ${displayModel}, trying next account`);
+      continue;
+    }
+    if (shouldRetryNonStreamResult(result)) {
+      log.warn(`Account ${acct.email} hit retryable upstream error on ${displayModel}, trying next account`);
       continue;
     }
     break; // other errors (502, transport) — don't retry
@@ -609,19 +679,11 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
   } catch (err) {
     // Only count true auth failures against the account. Workspace/cascade/model
     // errors and transport issues shouldn't disable the key.
-    const isAuthFail = /unauthenticated|invalid api key|invalid_grant|permission_denied.*account/i.test(err.message);
-    const isRateLimit = /rate limit|rate_limit|too many requests|quota/i.test(err.message);
-    const isInternal = /internal error occurred.*error id/i.test(err.message);
-    if (isAuthFail) reportError(apiKey);
-    if (isRateLimit) { markRateLimited(apiKey, 5 * 60 * 1000, modelKey); err.isRateLimit = true; err.isModelError = true; }
-    if (isInternal) { reportInternalError(apiKey); err.isModelError = true; }
-    if (err.isModelError && !isRateLimit && !isInternal) {
-      updateCapability(apiKey, modelKey, false, 'model_error');
-    }
+    const failure = applyFailurePolicy(apiKey, modelKey, err);
     recordRequest(model, false, Date.now() - startTime, apiKey);
     log.error('Chat error:', err.message);
     // Rate limits → 429 with Retry-After; model errors → 403; others → 502
-    if (isRateLimit) {
+    if (failure.isRateLimit) {
       const rl = isAllRateLimited(modelKey);
       return {
         status: 429,
@@ -927,7 +989,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
               const rl = await checkMessageRateLimit(acct.apiKey, px);
               if (!rl.hasCapacity) {
                 log.warn(`Preflight: ${acct.email} has no capacity (remaining=${rl.messagesRemaining}), skipping`);
-                markRateLimited(acct.id, modelKey);
+                markRateLimited(acct.apiKey, 5 * 60 * 1000, modelKey);
                 continue;
               }
             } catch (e) {
@@ -1028,19 +1090,11 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
           } catch (err) {
             lastErr = err;
             reuseEntry = null;
-            const isAuthFail = /unauthenticated|invalid api key|invalid_grant|permission_denied.*account/i.test(err.message);
-            const isRateLimit = /rate limit|rate_limit|too many requests|quota/i.test(err.message);
-            const isInternal = /internal error occurred.*error id/i.test(err.message);
+            const failure = applyFailurePolicy(currentApiKey, modelKey, err, { cooldownTransient: !committedOutput });
             const errorType = classifyStreamError(err);
             streamMetrics.lastErrorType = errorType;
-            if (isAuthFail) reportError(currentApiKey);
-            if (isRateLimit) { markRateLimited(currentApiKey, 5 * 60 * 1000, modelKey); err.isRateLimit = true; err.isModelError = true; }
-            if (isInternal) { reportInternalError(currentApiKey); err.isModelError = true; }
-            if (err.isModelError && !isRateLimit && !isInternal) {
-              updateCapability(currentApiKey, modelKey, false, 'model_error');
-            }
 
-            if (!committedOutput && (err.isModelError || isRateLimit)) {
+            if (!committedOutput && shouldRetryBeforeVisibleOutput(err)) {
               streamMetrics.retriesBeforeCommit++;
               slog.warn('Retrying stream on next account before visible output', {
                 attempt: attempt + 1,
@@ -1048,7 +1102,13 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
                 error: sanitizeText(err.message),
                 sawUpstreamProgress: attemptSawProgress,
               });
-              const tag = isRateLimit ? 'rate_limit' : isInternal ? 'internal_error' : 'model_error';
+              const tag = failure.isRateLimit
+                ? 'rate_limit'
+                : failure.isInternal
+                  ? 'internal_error'
+                  : failure.isPermanentModel
+                    ? 'model_error'
+                    : 'upstream_error';
               log.warn(`Account ${acct.email} failed (${tag}) on ${model}, trying next`);
               continue;
             }
