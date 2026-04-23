@@ -1343,6 +1343,41 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
               const clean = pathStreamThinking.flush();
               if (clean) stageChunk({ kind: 'thinking', value: clean, visibleChars: clean.length });
             }
+
+            const pendingText = staged
+              .filter(entry => entry.kind === 'text')
+              .map(entry => entry.value || '')
+              .join('');
+            const pendingThinking = staged
+              .filter(entry => entry.kind === 'thinking')
+              .map(entry => entry.value || '')
+              .join('');
+            const pendingShortReason = activeToolCallMode
+              && !committedOutput
+              && attemptToolCalls.length === 0
+              && collectedToolCalls.length === 0
+              && !pendingThinking.trim()
+              && attempt + 1 < maxAttempts
+              ? getCacheSkipReason({
+                  text: pendingText,
+                  thinking: pendingThinking,
+                  messages,
+                  useCascade,
+                  toolCalls: 0,
+                })
+              : null;
+            if (pendingShortReason === 'short_for_long_context') {
+              streamMetrics.retriesBeforeCommit++;
+              cooldownAccountModel(currentApiKey, modelKey, TRANSIENT_MODEL_COOLDOWN_MS, 'short_tool_stop');
+              slog.warn('Retrying suspicious short tool-mode stop before visible output', {
+                attempt: attempt + 1,
+                pendingTextChars: pendingText.trim().length,
+                inputChars: _msgCharsStream,
+                cacheSkipReason: pendingShortReason,
+              });
+              continue;
+            }
+
             flushPrelude(true);
             for (const tc of attemptToolCalls) collectedToolCalls.push(tc);
 
