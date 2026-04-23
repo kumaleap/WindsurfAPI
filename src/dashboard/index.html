@@ -1042,7 +1042,6 @@ window._firebaseOAuth = async function(provider) {
             <input id="wl-password" class="input" type="password" placeholder="••••••••" autocomplete="off" onkeydown="if(event.key==='Enter')App.windsurfLogin()">
           </div>
         </div>
-        </div>
         <div class="field-row-actions">
           <button class="btn btn-primary" onclick="App.windsurfLogin()" id="wl-btn">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
@@ -1053,6 +1052,26 @@ window._firebaseOAuth = async function(provider) {
             <span class="box"></span>
             <span>登录成功自动加入账号池</span>
           </label>
+        </div>
+        <div style="margin-top:16px;padding-top:16px;border-top:1px dashed var(--border)">
+          <label class="field-label">批量导入</label>
+          <textarea
+            id="wl-batch-input"
+            class="textarea"
+            rows="6"
+            placeholder="user1@mail.com pass123&#10;http://proxy:8080 user2@mail.com pass456&#10;socks5://user:pass@1.2.3.4:1080 user3@mail.com pass789"
+          ></textarea>
+          <div class="field-hint">每行一个账号。格式：<code>[代理URL] 邮箱 密码</code> 或 <code>邮箱 密码</code>。不写代理时使用下面的登录代理设置。</div>
+          <div class="field-row-actions">
+            <button class="btn btn-outline" onclick="App.pasteWindsurfBatch()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg>
+              读取剪贴板
+            </button>
+            <button class="btn btn-primary" onclick="App.windsurfLoginBatch()" id="wl-batch-btn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M3 5h18"/><path d="M3 12h18"/><path d="M3 19h18"/></svg>
+              批量导入并登录
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -1991,11 +2010,7 @@ const App = {
       status.textContent = `登录成功 ${r.email || label} 已加入账号池`;
       this.toast(`${label} 登录成功`, 'success');
       this.loadAccounts();
-      const entry = { time: new Date().toISOString(), email: r.email || label, proxy: '直连', status: 'ok', method: label };
-      this.loginHistory.unshift(entry);
-      if (this.loginHistory.length > 50) this.loginHistory.length = 50;
-      localStorage.setItem('wl_history', JSON.stringify(this.loginHistory));
-      this.renderLoginHistory();
+      this.pushLoginHistory({ time: new Date().toISOString(), email: r.email || label, proxy: '直连', status: 'success', method: label });
     } catch (err) {
       status.style.color = '#ef4444';
       status.textContent = `${label} 登录失败: ${err.message}`;
@@ -2005,26 +2020,81 @@ const App = {
     }
   },
 
-  async windsurfLogin() {
-    const email = document.getElementById('wl-email').value.trim();
-    const password = document.getElementById('wl-password').value.trim();
-    if (!email || !password) return this.toast('请输入邮箱和密码', 'error');
-
+  getWindsurfLoginProxy() {
     const proxyHost = document.getElementById('wl-proxy-host').value.trim();
-    const proxy = proxyHost ? {
+    return proxyHost ? {
       type: document.getElementById('wl-proxy-type').value,
       host: proxyHost,
       port: parseInt(document.getElementById('wl-proxy-port').value) || 8080,
       username: document.getElementById('wl-proxy-user').value,
       password: document.getElementById('wl-proxy-pass').value,
     } : null;
+  },
+
+  getWindsurfProxyLabel(proxy) {
+    return proxy ? `${proxy.type}://${proxy.host}:${proxy.port}` : '全局';
+  },
+
+  pushLoginHistory(entry) {
+    this.loginHistory.unshift(entry);
+    if (this.loginHistory.length > 50) this.loginHistory.length = 50;
+    localStorage.setItem('wl_history', JSON.stringify(this.loginHistory));
+    this.renderLoginHistory();
+  },
+
+  pushLoginHistoryEntries(entries) {
+    for (const entry of entries.slice().reverse()) this.loginHistory.unshift(entry);
+    if (this.loginHistory.length > 50) this.loginHistory.length = 50;
+    localStorage.setItem('wl_history', JSON.stringify(this.loginHistory));
+    this.renderLoginHistory();
+  },
+
+  parseWindsurfBatchLine(line, fallbackProxy = null) {
+    const parts = String(line || '').trim().split(/\s+/);
+    if (parts.length < 2) return null;
+
+    let proxy = fallbackProxy;
+    let email = parts[0];
+    let password = parts.slice(1).join(' ');
+    if (/^[a-z]+:\/\//i.test(parts[0]) && parts.length >= 3) {
+      proxy = this.parseProxyUrl(parts[0]);
+      if (!proxy) return null;
+      email = parts[1];
+      password = parts.slice(2).join(' ');
+    }
+    if (!email || !password) return null;
+    return { email, password, proxy };
+  },
+
+  parseProxyUrl(spec) {
+    try {
+      const url = new URL(spec);
+      if (!/^https?:$|^socks5:$/i.test(url.protocol)) return null;
+      return {
+        type: url.protocol.replace(':', ''),
+        host: url.hostname,
+        port: parseInt(url.port, 10) || (url.protocol === 'socks5:' ? 1080 : 8080),
+        username: decodeURIComponent(url.username || ''),
+        password: decodeURIComponent(url.password || ''),
+      };
+    } catch {
+      return null;
+    }
+  },
+
+  async windsurfLogin() {
+    const email = document.getElementById('wl-email').value.trim();
+    const password = document.getElementById('wl-password').value.trim();
+    if (!email || !password) return this.toast('请输入邮箱和密码', 'error');
+
+    const proxy = this.getWindsurfLoginProxy();
     const autoAdd = document.getElementById('wl-auto-add').checked;
 
     const btn = document.getElementById('wl-btn');
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> 登录中...';
 
-    const entry = { time: new Date().toISOString(), email, proxy: proxy ? `${proxy.type}://${proxy.host}:${proxy.port}` : '全局', status: 'pending' };
+    const entry = { time: new Date().toISOString(), email, proxy: this.getWindsurfProxyLabel(proxy), status: 'pending' };
 
     try {
       const r = await this.api('POST', '/windsurf-login', { email, password, proxy, autoAdd });
@@ -2077,12 +2147,68 @@ const App = {
       this.toast(err.message, 'error');
     }
 
-    this.loginHistory.unshift(entry);
-    if (this.loginHistory.length > 50) this.loginHistory.length = 50;
-    localStorage.setItem('wl_history', JSON.stringify(this.loginHistory));
-    this.renderLoginHistory();
+    this.pushLoginHistory(entry);
     btn.disabled = false;
     btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg> 登录';
+  },
+
+  async pasteWindsurfBatch() {
+    try {
+      const text = await navigator.clipboard.readText();
+      document.getElementById('wl-batch-input').value = text || '';
+      this.toast('已读取剪贴板');
+    } catch (err) {
+      this.toast(`读取剪贴板失败: ${err.message}`, 'error');
+    }
+  },
+
+  async windsurfLoginBatch() {
+    const input = document.getElementById('wl-batch-input');
+    const lines = (input.value || '').split('\n').map(line => line.trim()).filter(Boolean);
+    if (!lines.length) return this.toast('请输入批量账号内容', 'error');
+
+    const fallbackProxy = this.getWindsurfLoginProxy();
+    const accounts = [];
+    for (const line of lines) {
+      const parsed = this.parseWindsurfBatchLine(line, fallbackProxy);
+      if (!parsed) return this.toast(`批量格式错误: ${line}`, 'error');
+      accounts.push(parsed);
+    }
+
+    const autoAdd = document.getElementById('wl-auto-add').checked;
+    const btn = document.getElementById('wl-batch-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> 批量登录中...';
+    try {
+      const r = await this.api('POST', '/windsurf-login/batch', { accounts, autoAdd });
+      if (r.error) throw new Error(r.error);
+      const historyEntries = (r.results || []).map((item, idx) => ({
+        time: new Date().toISOString(),
+        email: item.email || accounts[idx]?.email || '',
+        proxy: this.getWindsurfProxyLabel(accounts[idx]?.proxy || fallbackProxy),
+        status: item.success ? 'success' : `error: ${item.error || 'unknown'}`,
+      }));
+      this.pushLoginHistoryEntries(historyEntries);
+      this.loadAccounts();
+      const rd = document.getElementById('wl-result');
+      rd.classList.remove('hidden');
+      rd.innerHTML = `
+        <div class="section-header">
+          <div>
+            <div class="section-title" style="color:var(--success)">批量登录完成</div>
+            <div class="section-desc">成功 ${r.successCount || 0} 个，失败 ${r.failCount || 0} 个</div>
+          </div>
+        </div>
+        <div class="section-body">
+          <div class="text-sm" style="white-space:pre-wrap">${this.esc((r.results || []).map(item => `${item.success ? '✓' : '✗'} ${item.email || '-'}${item.success ? '' : `：${item.error || 'unknown'}`}`).join('\n'))}</div>
+        </div>`;
+      this.toast(`批量完成：成功 ${r.successCount || 0}，失败 ${r.failCount || 0}`);
+    } catch (err) {
+      this.toast(err.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M3 5h18"/><path d="M3 12h18"/><path d="M3 19h18"/></svg> 批量导入并登录';
+    }
   },
 
   renderLoginHistory() {
