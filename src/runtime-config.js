@@ -31,9 +31,9 @@ export const DEFAULT_IDENTITY_PROMPTS = {
 const DEFAULTS = {
   experimental: {
     // Reuse Cascade cascade_id across multi-turn requests when the history
-    // fingerprint matches. Big latency win for long conversations but relies
-    // on Windsurf keeping the cascade alive — off by default.
-    cascadeConversationReuse: false,
+    // fingerprint matches. Big latency win for long conversations. Enabled by
+    // default now that reuse is guarded to bona fide "next user turn" flows.
+    cascadeConversationReuse: true,
     // Inject a system prompt that tells the model to speak as the
     // user-selected model and avoid leaking relay/gateway/backend details.
     // Enabled by default so passthrough consumers see stable model identity.

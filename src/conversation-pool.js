@@ -58,6 +58,8 @@ function canonicalise(messages) {
  */
 export function fingerprintBefore(messages) {
   if (!Array.isArray(messages) || messages.length < 2) return null;
+  const latest = messages[messages.length - 1];
+  if (latest?.role !== 'user') return null;
   // Must have at least one assistant turn in the history — otherwise the
   // previous "cascade" never actually existed from our side.
   const history = messages.slice(0, -1);
