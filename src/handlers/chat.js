@@ -44,6 +44,7 @@ const STREAM_FOLLOWUP_BOUNDARY_MS = 90;
 const STREAM_FOLLOWUP_THINKING_COMMIT_CHARS = 20;
 const STREAM_FOLLOWUP_THINKING_COMMIT_MS = 120;
 const TOOL_MODE_EARLY_FINISH_GRACE_MS = 700;
+const MAX_EMULATED_TOOL_CALLS_PER_ROUND = 16;
 const HAIKU_TOOL_OUTPUT_GUARD_INPUT_CHARS = 30_000;
 const LONG_TOOL_OUTPUT_GUARD_INPUT_CHARS = 120_000;
 const DEFAULT_HAIKU_OUTPUT_GUARD_TOKENS = 900;
@@ -90,6 +91,51 @@ function isOutputLimitMessage(message = '') {
 
 function getPartialFinishReason(err) {
   return isOutputLimitError(err) ? 'length' : 'stop';
+}
+
+function normalizeToolArgumentsJson(rawArgs) {
+  const raw = typeof rawArgs === 'string' ? rawArgs.trim() : '';
+  if (!raw) return '{}';
+  try {
+    return JSON.stringify(JSON.parse(raw));
+  } catch {
+    return raw;
+  }
+}
+
+function buildEmulatedToolCallKey(tc) {
+  const name = String(tc?.name || tc?.function?.name || 'unknown');
+  const args = normalizeToolArgumentsJson(tc?.argumentsJson || tc?.function?.arguments || tc?.arguments || '{}');
+  return `${name}\n${args}`;
+}
+
+function normalizeEmulatedToolCalls(toolCalls, maxCalls = MAX_EMULATED_TOOL_CALLS_PER_ROUND) {
+  const accepted = [];
+  const seen = new Set();
+  let droppedDuplicates = 0;
+  let droppedOverflow = 0;
+
+  for (const tc of toolCalls || []) {
+    if (!tc) continue;
+    const normalized = {
+      ...tc,
+      name: tc.name || tc.function?.name || 'unknown',
+      argumentsJson: normalizeToolArgumentsJson(tc.argumentsJson || tc.function?.arguments || tc.arguments || '{}'),
+    };
+    const key = buildEmulatedToolCallKey(normalized);
+    if (seen.has(key)) {
+      droppedDuplicates++;
+      continue;
+    }
+    if (accepted.length >= maxCalls) {
+      droppedOverflow++;
+      continue;
+    }
+    seen.add(key);
+    accepted.push(normalized);
+  }
+
+  return { toolCalls: accepted, droppedDuplicates, droppedOverflow };
 }
 
 function buildOutputGuardSystemMessage(modelKey, maxTokens, emulateTools, inputChars) {
@@ -630,7 +676,13 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
       {
         const parsed = parseToolCallsFromText(allText);
         allText = parsed.text;
-        if (emulateTools) toolCalls = parsed.toolCalls;
+        if (emulateTools) {
+          const normalized = normalizeEmulatedToolCalls(parsed.toolCalls);
+          toolCalls = normalized.toolCalls;
+          if (normalized.droppedDuplicates || normalized.droppedOverflow) {
+            log.warn(`Non-stream emulated tool calls normalized: kept=${toolCalls.length} duplicate=${normalized.droppedDuplicates} overflow=${normalized.droppedOverflow}`);
+          }
+        }
       }
       // Built-in Cascade tool calls (chunks.toolCalls — edit_file, view_file,
       // list_directory, run_command, etc.) are intentionally DROPPED. Their
@@ -932,16 +984,42 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
           const pathStreamText = new PathSanitizeStream();
           const pathStreamThinking = new PathSanitizeStream();
           const attemptToolCalls = [];
+          const seenToolCallKeys = new Set();
           const staged = [];
           let stagedChars = 0;
           let stagedFirstAt = 0;
           let attemptSawProgress = false;
+          let droppedDuplicateToolCalls = 0;
+          let droppedOverflowToolCalls = 0;
 
           const stageChunk = (entry) => {
             if (!entry) return;
             staged.push(entry);
             stagedChars += entry.visibleChars || 0;
             if (!stagedFirstAt) stagedFirstAt = Date.now();
+          };
+
+          const acceptToolCall = (tc) => {
+            if (!tc) return false;
+            const normalized = {
+              ...tc,
+              name: tc.name || tc.function?.name || 'unknown',
+              argumentsJson: normalizeToolArgumentsJson(tc.argumentsJson || tc.function?.arguments || tc.arguments || '{}'),
+            };
+            const key = buildEmulatedToolCallKey(normalized);
+            if (seenToolCallKeys.has(key)) {
+              droppedDuplicateToolCalls++;
+              return false;
+            }
+            if (attemptToolCalls.length >= MAX_EMULATED_TOOL_CALLS_PER_ROUND) {
+              droppedOverflowToolCalls++;
+              return false;
+            }
+            seenToolCallKeys.add(key);
+            const idx = attemptToolCalls.length;
+            attemptToolCalls.push(normalized);
+            stageChunk({ kind: 'tool', value: normalized, index: idx, visibleChars: 1 });
+            return true;
           };
 
           const flushPrelude = (force = false) => {
@@ -1021,12 +1099,11 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
                   const { text: safe, toolCalls: done } = toolParser.feed(chunk.text);
                   safeText = safe;
                   if (emulateTools) {
+                    let acceptedToolCall = false;
                     for (const tc of done) {
-                      const idx = attemptToolCalls.length;
-                      attemptToolCalls.push(tc);
-                      stageChunk({ kind: 'tool', value: tc, index: idx, visibleChars: 1 });
+                      if (acceptToolCall(tc)) acceptedToolCall = true;
                     }
-                    if (done.length) scheduleToolModeEarlyFinish();
+                    if (acceptedToolCall) scheduleToolModeEarlyFinish();
                   }
                 }
               }
@@ -1107,11 +1184,11 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
                 if (clean) stageChunk({ kind: 'text', value: clean, visibleChars: clean.length });
               }
               if (emulateTools) {
+                let acceptedTailToolCall = false;
                 for (const tc of tail.toolCalls) {
-                  const idx = attemptToolCalls.length;
-                  attemptToolCalls.push(tc);
-                  stageChunk({ kind: 'tool', value: tc, index: idx, visibleChars: 1 });
+                  if (acceptToolCall(tc)) acceptedTailToolCall = true;
                 }
+                if (acceptedTailToolCall) scheduleToolModeEarlyFinish();
               }
             }
 
@@ -1167,6 +1244,8 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
               textChars: accText.length,
               thinkingChars: accThinking.length,
               toolCalls: collectedToolCalls.length,
+              droppedDuplicateToolCalls,
+              droppedOverflowToolCalls,
               abortReason: abortReason || null,
             });
             return;
