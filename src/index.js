@@ -65,7 +65,11 @@ async function main() {
     log.warn('API_KEY is empty — API endpoints are publicly accessible.');
   }
   if (!config.dashboardPassword && !config.apiKey) {
-    log.warn('Dashboard auth is disabled — /dashboard and /dashboard/api are publicly accessible.');
+    if (config.allowOpenDashboard) {
+      log.warn('Dashboard auth is disabled — /dashboard and /dashboard/api are publicly accessible because ALLOW_OPEN_DASHBOARD=true.');
+    } else {
+      log.warn('Dashboard is disabled until DASHBOARD_PASSWORD or API_KEY is set.');
+    }
   }
 
   const server = startServer();

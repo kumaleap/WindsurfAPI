@@ -75,6 +75,37 @@ function prepareStreamResponse(req, res) {
   res.flushHeaders?.();
 }
 
+function isDashboardAccessEnabled() {
+  return !!(config.dashboardPassword || config.apiKey || config.allowOpenDashboard);
+}
+
+function writeDashboardDisabledPage(res) {
+  const html = `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dashboard Disabled</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#0b1020; color:#e5e7eb; margin:0; min-height:100vh; display:grid; place-items:center; padding:24px; }
+    .card { max-width:720px; width:100%; background:#111827; border:1px solid #374151; border-radius:16px; padding:24px; box-sizing:border-box; }
+    h1 { margin:0 0 12px; font-size:24px; }
+    p { margin:0 0 10px; line-height:1.6; color:#cbd5e1; }
+    code { background:#1f2937; padding:2px 6px; border-radius:6px; color:#f9fafb; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Dashboard 已禁用</h1>
+    <p>当前未设置 <code>DASHBOARD_PASSWORD</code> 或 <code>API_KEY</code>，因此 dashboard 默认不对外开放。</p>
+    <p>如需启用，请在环境变量中设置其中任一认证项；只有明确设置 <code>ALLOW_OPEN_DASHBOARD=true</code> 时，才允许无认证访问。</p>
+  </div>
+</body>
+</html>`;
+  res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8' });
+  res.end(html);
+}
+
 async function route(req, res) {
   const { method } = req;
   const path = req.url.split('?')[0];
@@ -96,6 +127,7 @@ async function route(req, res) {
     return res.end();
   }
   if (path === '/dashboard' || path === '/dashboard/') {
+    if (!isDashboardAccessEnabled()) return writeDashboardDisabledPage(res);
     try {
       const html = readFileSync(join(__dirname, 'dashboard', 'index.html'));
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });

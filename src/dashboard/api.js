@@ -35,6 +35,14 @@ function json(res, status, body) {
   res.end(data);
 }
 
+function hasDashboardAuth() {
+  return !!(config.dashboardPassword || config.apiKey);
+}
+
+function isDashboardAccessEnabled() {
+  return hasDashboardAuth() || config.allowOpenDashboard;
+}
+
 function checkAuth(req) {
   // Header is preferred (set by fetch). EventSource can't set custom headers,
   // so /logs/stream etc. also accept ?pwd=... as fallback.
@@ -47,7 +55,7 @@ function checkAuth(req) {
   }
   if (config.dashboardPassword) return pw === config.dashboardPassword;
   if (config.apiKey) return pw === config.apiKey;
-  return true;  // No password and no API key = open access
+  return config.allowOpenDashboard;
 }
 
 async function processWindsurfLogin({ email, password, loginProxy, autoAdd }) {
@@ -88,6 +96,13 @@ async function processWindsurfLogin({ email, password, loginProxy, autoAdd }) {
 export async function handleDashboardApi(method, subpath, body, req, res) {
   if (method === 'OPTIONS') return json(res, 204, '');
 
+  if (!isDashboardAccessEnabled()) {
+    return json(res, 503, {
+      error: 'Dashboard access is disabled until DASHBOARD_PASSWORD or API_KEY is set. Set ALLOW_OPEN_DASHBOARD=true to bypass.',
+      disabled: true,
+    });
+  }
+
   // Auth check (except for auth verification endpoint)
   if (subpath !== '/auth' && !checkAuth(req)) {
     return json(res, 401, { error: 'Unauthorized. Set X-Dashboard-Password header.' });
@@ -95,8 +110,13 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
 
   // ─── Auth ─────────────────────────────────────────────
   if (subpath === '/auth') {
-    const needsAuth = !!(config.dashboardPassword || config.apiKey);
-    if (!needsAuth) return json(res, 200, { required: false });
+    if (!hasDashboardAuth()) {
+      return json(res, 200, {
+        required: false,
+        disabled: !config.allowOpenDashboard,
+        openAccess: !!config.allowOpenDashboard,
+      });
+    }
     return json(res, 200, { required: true, valid: checkAuth(req) });
   }
 
@@ -423,6 +443,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       codeiumApiUrl: config.codeiumApiUrl,
       hasApiKey: !!config.apiKey,
       hasDashboardPassword: !!config.dashboardPassword,
+      allowOpenDashboard: !!config.allowOpenDashboard,
     });
   }
 
