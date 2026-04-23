@@ -115,9 +115,17 @@ function mapErrorType(type) {
       return 'authentication_error';
     case 'model_not_available':
     case 'model_not_entitled':
+    case 'model_blocked':
       return 'permission_error';
     case 'rate_limit_exceeded':
       return 'rate_limit_error';
+    case 'not_found':
+    case 'not_found_error':
+      return 'not_found_error';
+    case 'upstream_error':
+    case 'pool_exhausted':
+    case 'ls_unavailable':
+      return 'overloaded_error';
     default:
       return 'api_error';
   }
@@ -212,6 +220,7 @@ function estimateCountTokens(body) {
     else if (Array.isArray(message?.content)) {
       for (const part of message.content) {
         if (typeof part?.text === 'string') chars += part.text.length;
+        else if (typeof part?.image_url?.url === 'string' || typeof part?.image_url === 'string') chars += 1024;
       }
     }
     if (Array.isArray(message?.tool_calls)) {
@@ -561,6 +570,7 @@ export async function handleMessages(body) {
           error: {
             type: mapErrorType(result.body?.error?.type),
             message: result.body?.error?.message || 'Unknown error',
+            ...(result.body?.error?.retry_after_ms ? { retry_after_ms: result.body.error.retry_after_ms } : {}),
           },
         },
       };
@@ -582,6 +592,7 @@ export async function handleMessages(body) {
         error: {
           type: mapErrorType(streamResult.body?.error?.type),
           message: streamResult.body?.error?.message || 'Upstream error',
+          ...(streamResult.body?.error?.retry_after_ms ? { retry_after_ms: streamResult.body.error.retry_after_ms } : {}),
         },
       },
     };
