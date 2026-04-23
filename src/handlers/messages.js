@@ -210,6 +210,94 @@ function anthropicToOpenAI(body) {
   };
 }
 
+function contentTextChars(content) {
+  if (typeof content === 'string') return content.length;
+  if (!Array.isArray(content)) return 0;
+  let chars = 0;
+  for (const block of content) {
+    if (typeof block?.text === 'string') chars += block.text.length;
+    else if (typeof block?.content === 'string') chars += block.content.length;
+    else if (Array.isArray(block?.content)) {
+      for (const nested of block.content) {
+        if (typeof nested?.text === 'string') chars += nested.text.length;
+      }
+    }
+  }
+  return chars;
+}
+
+function contentBlockStats(content) {
+  const stats = {
+    textBlocks: 0,
+    imageBlocks: 0,
+    documentBlocks: 0,
+    thinkingBlocks: 0,
+    toolUseBlocks: 0,
+    toolResultBlocks: 0,
+    toolResultChars: 0,
+  };
+  if (!Array.isArray(content)) return stats;
+  for (const block of content) {
+    if (block?.type === 'text') stats.textBlocks++;
+    else if (block?.type === 'image') stats.imageBlocks++;
+    else if (block?.type === 'document') stats.documentBlocks++;
+    else if (block?.type === 'thinking') stats.thinkingBlocks++;
+    else if (block?.type === 'tool_use') stats.toolUseBlocks++;
+    else if (block?.type === 'tool_result') {
+      stats.toolResultBlocks++;
+      stats.toolResultChars += contentTextChars(block.content);
+    }
+  }
+  return stats;
+}
+
+function getLastUserMessage(body) {
+  const messages = Array.isArray(body?.messages) ? body.messages : [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === 'user') return messages[i];
+  }
+  return null;
+}
+
+function getFirstText(content) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  const textBlock = content.find(block => block?.type === 'text' && typeof block.text === 'string');
+  return textBlock?.text || '';
+}
+
+function summarizeMessagesRequest(body, openaiBody, thinkingConfig) {
+  const messages = Array.isArray(body?.messages) ? body.messages : [];
+  const systemChars = typeof body?.system === 'string'
+    ? body.system.length
+    : Array.isArray(body?.system)
+      ? body.system.reduce((n, block) => n + (typeof block?.text === 'string' ? block.text.length : 0), 0)
+      : 0;
+  const blockTotals = messages.reduce((acc, message) => {
+    const stats = contentBlockStats(message?.content);
+    for (const [key, value] of Object.entries(stats)) acc[key] += value;
+    return acc;
+  }, contentBlockStats([]));
+  const lastUser = getLastUserMessage(body);
+  const lastUserText = getFirstText(lastUser?.content).trimStart();
+  const toolsCount = Array.isArray(body?.tools) ? body.tools.length : 0;
+  return {
+    model: body?.model || null,
+    stream: !!body?.stream,
+    maxTokens: body?.max_tokens || null,
+    thinking: !!thinkingConfig?.enabled,
+    messages: messages.length,
+    systemChars,
+    toolsCount,
+    openaiMessages: Array.isArray(openaiBody?.messages) ? openaiBody.messages.length : 0,
+    openaiTools: Array.isArray(openaiBody?.tools) ? openaiBody.tools.length : 0,
+    lastRole: messages[messages.length - 1]?.role || null,
+    lastUserChars: contentTextChars(lastUser?.content),
+    slashCommandWithoutTools: toolsCount === 0 && lastUserText.startsWith('/'),
+    ...blockTotals,
+  };
+}
+
 function estimateCountTokens(body) {
   const openaiBody = anthropicToOpenAI(body || {});
   let chars = 0;
@@ -559,6 +647,15 @@ export async function handleMessages(body) {
   const wantStream = !!body.stream;
   const thinkingConfig = normalizeThinkingConfig(body?.thinking);
   const openaiBody = anthropicToOpenAI(body);
+  const requestSummary = summarizeMessagesRequest(body, openaiBody, thinkingConfig);
+  log.info('Messages request summary', requestSummary);
+  if (requestSummary.slashCommandWithoutTools) {
+    log.warn('Messages slash command arrived without tools; client may have sent a Claude Code command as plain text', {
+      model: requestSummary.model,
+      messages: requestSummary.messages,
+      lastUserChars: requestSummary.lastUserChars,
+    });
+  }
 
   if (!wantStream) {
     const result = await handleChatCompletions({ ...openaiBody, stream: false });
