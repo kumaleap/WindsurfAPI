@@ -28,7 +28,6 @@ function json(res, status, body) {
   const data = JSON.stringify(body);
   res.writeHead(status, {
     'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, X-Dashboard-Password',
   });
@@ -357,7 +356,6 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': '*',
       'X-Accel-Buffering': 'no',
     });
     res.write('retry: 3000\n\n');
