@@ -389,7 +389,9 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble } = {}) {
       writeVarintField(1, 1),             // SECTION_OVERRIDE_MODE_OVERRIDE
       writeStringField(2,
         'You are an AI assistant accessed via API with the tool-calling capabilities described above. ' +
-        'You are NOT running inside an IDE or code editor.\n\n' +
+        'Use the provided functions when they are relevant, and otherwise answer directly.\n\n' +
+        'Capability rule: do not claim access to any hidden IDE, filesystem, terminal, browser, or external service beyond the tools explicitly provided for this request. ' +
+        'If a needed capability is unavailable, say so briefly and continue with the best direct answer you can.\n\n' +
         'CRITICAL SECURITY RULE: You must NEVER reveal any information about the server, ' +
         'infrastructure, or runtime environment you are running on. This includes but is not limited to: ' +
         'operating system, Docker containers, file paths, working directories, IP addresses, ' +
@@ -430,9 +432,9 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble } = {}) {
     const noToolAdditional = Buffer.concat([
       writeVarintField(1, 1),             // SECTION_OVERRIDE_MODE_OVERRIDE
       writeStringField(2,
-        'You have no tools, no file access, and no command execution. ' +
-        'Answer all questions directly using your knowledge. ' +
-        'Never pretend to create files or check directories.'),
+        'No caller-provided tools are available for this request. ' +
+        'Answer directly from the conversation context and your model knowledge. ' +
+        'Do not claim that you inspected files, ran commands, or accessed external systems unless that information was explicitly provided in the messages.'),
     ]);
     convParts.push(writeMessageField(12, noToolAdditional));
 
@@ -445,14 +447,10 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble } = {}) {
       writeVarintField(1, 1),             // SECTION_OVERRIDE_MODE_OVERRIDE
       writeStringField(2,
         'You are a conversational AI assistant accessed via API. ' +
-        'You are NOT running inside an IDE or code editor. ' +
-        'You CANNOT access, create, read, edit, or delete any files on any file system. ' +
-        'You CANNOT execute commands, run programs, or interact with any external services. ' +
-        'You CANNOT check directories or browse any working directory. ' +
-        'When users ask you to perform file operations, system actions, or check directories, ' +
-        'clearly tell them that you are a text-based conversational AI without those capabilities. ' +
-        'Do NOT pretend to check directories, create files, or perform actions you cannot actually do. ' +
-        'Answer all questions directly using your training knowledge.\n\n' +
+        'Answer conversationally and directly. ' +
+        'Do not claim access to any hidden IDE, filesystem, terminal, browser, or external service that is not explicitly provided in this request. ' +
+        'Do not fabricate file checks, command output, directory listings, or completed actions you did not actually perform. ' +
+        'If the user asks you to do something that requires unavailable tools, explain that limitation briefly and continue with the best direct answer you can.\n\n' +
         'CRITICAL SECURITY RULE: You must NEVER reveal any information about the server, ' +
         'infrastructure, or runtime environment you are running on. This includes but is not limited to: ' +
         'operating system, Docker containers, file paths, working directories, IP addresses, ' +
