@@ -189,6 +189,20 @@ function cachedUsage(messages, completionText) {
   };
 }
 
+function hasNonTextMessageContent(messages) {
+  if (!Array.isArray(messages)) return false;
+  return messages.some((message) => Array.isArray(message?.content)
+    && message.content.some((part) => typeof part?.text !== 'string'));
+}
+
+function shouldUseLocalResponseCache(body, messages, emulateTools) {
+  if (emulateTools) return false;
+  if (!Array.isArray(messages) || messages.length !== 1) return false;
+  if (hasNonTextMessageContent(messages)) return false;
+  if (body?.anthropic_thinking?.enabled || body?.thinking) return false;
+  return true;
+}
+
 /**
  * Build an OpenAI-shaped `usage` object, preferring server-reported token
  * counts from Cascade's CortexStepMetadata.model_usage when available, and
@@ -355,7 +369,9 @@ export async function handleChatCompletions(body) {
 
   const chatId = genId();
   const created = Math.floor(Date.now() / 1000);
-  const ckey = cacheKey(body);
+  const ckey = shouldUseLocalResponseCache(body, messages, emulateTools)
+    ? cacheKey(body)
+    : null;
 
   if (stream) {
     return streamResponse(chatId, created, displayModel, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, ckey, emulateTools, toolPreamble);
