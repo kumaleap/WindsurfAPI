@@ -24,13 +24,14 @@ Partially implemented in `WindsurfAPI`:
 - Pre-visible-output stream retries include rate limit, permanent model errors,
   internal upstream errors, and retryable transport/provider errors.
 - Suspiciously short long-context stop replies are not cached.
+- Suspicious short `stop` replies in active tool-call mode are retried before
+  any visible output is sent.
+- Account labels used by auth logs are routed through the shared redaction path.
 
 Still open:
 
 - Structured error-event persistence for dashboard breakdowns.
 - LS-level quarantine for repeated panel-state failures.
-- A conservative retry path for suspicious short `stop` replies in active
-  tool-call mode before any visible output is sent.
 - Partial-success outcome tracking separate from plain success.
 - Product decision on Claude-family downgrade behavior.
 
