@@ -43,6 +43,7 @@ const STREAM_FOLLOWUP_BOUNDARY_CHARS = 24;
 const STREAM_FOLLOWUP_BOUNDARY_MS = 90;
 const STREAM_FOLLOWUP_THINKING_COMMIT_CHARS = 20;
 const STREAM_FOLLOWUP_THINKING_COMMIT_MS = 120;
+const TOOL_MODE_EARLY_FINISH_GRACE_MS = 700;
 const HAIKU_TOOL_OUTPUT_GUARD_INPUT_CHARS = 30_000;
 const LONG_TOOL_OUTPUT_GUARD_INPUT_CHARS = 120_000;
 const DEFAULT_HAIKU_OUTPUT_GUARD_TOKENS = 900;
@@ -757,10 +758,31 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
       const requestId = newRequestId();
       const slog = withCtx({ requestId, route: 'chat.stream', model, modelKey });
       const abortController = new AbortController();
+      let abortReason = null;
+      let toolEarlyFinishTimer = null;
+      const clearToolEarlyFinishTimer = () => {
+        if (!toolEarlyFinishTimer) return;
+        clearTimeout(toolEarlyFinishTimer);
+        toolEarlyFinishTimer = null;
+      };
+      const abortUpstream = (reason) => {
+        if (abortController.signal.aborted) return;
+        abortReason = reason;
+        clearToolEarlyFinishTimer();
+        abortController.abort();
+      };
+      const scheduleToolModeEarlyFinish = () => {
+        if (!emulateTools) return;
+        clearToolEarlyFinishTimer();
+        toolEarlyFinishTimer = setTimeout(() => {
+          slog.info('Ending tool round early after complete tool_call burst');
+          abortUpstream('tool_calls_ready');
+        }, TOOL_MODE_EARLY_FINISH_GRACE_MS);
+      };
       res.on('close', () => {
         if (!res.writableEnded) {
           slog.info('Client disconnected mid-stream, aborting upstream');
-          abortController.abort();
+          abortUpstream('client_disconnect');
         }
       });
       const send = (data) => {
@@ -1004,6 +1026,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
                       attemptToolCalls.push(tc);
                       stageChunk({ kind: 'tool', value: tc, index: idx, visibleChars: 1 });
                     }
+                    if (done.length) scheduleToolModeEarlyFinish();
                   }
                 }
               }
@@ -1071,7 +1094,13 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
               await client.rawGetChatMessage(messages, modelEnum, modelUid, { onChunk });
             }
 
-            if (toolParser) {
+            clearToolEarlyFinishTimer();
+
+            if (abortReason === 'client_disconnect') {
+              return;
+            }
+
+            if (toolParser && abortReason !== 'tool_calls_ready') {
               const tail = toolParser.flush();
               if (tail.text) {
                 const clean = pathStreamText.feed(tail.text);
@@ -1086,11 +1115,11 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
               }
             }
 
-            {
+            if (abortReason !== 'tool_calls_ready') {
               const clean = pathStreamText.flush();
               if (clean) stageChunk({ kind: 'text', value: clean, visibleChars: clean.length });
             }
-            {
+            if (abortReason !== 'tool_calls_ready') {
               const clean = pathStreamThinking.flush();
               if (clean) stageChunk({ kind: 'thinking', value: clean, visibleChars: clean.length });
             }
@@ -1138,9 +1167,11 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
               textChars: accText.length,
               thinkingChars: accThinking.length,
               toolCalls: collectedToolCalls.length,
+              abortReason: abortReason || null,
             });
             return;
           } catch (err) {
+            clearToolEarlyFinishTimer();
             lastErr = err;
             reuseEntry = null;
             const failure = applyFailurePolicy(currentApiKey, modelKey, err, { cooldownTransient: !committedOutput });
