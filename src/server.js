@@ -135,16 +135,24 @@ async function route(req, res) {
     let body = {};
     if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
       try {
-        body = JSON.parse(await readBody(req));
+        const rawBody = await readBody(req);
+        body = rawBody.trim() ? JSON.parse(rawBody) : {};
       } catch (err) {
         if (err?.statusCode === 413) return json(res, 413, { error: 'Request body too large' });
+        return json(res, 400, { error: 'Invalid JSON' });
       }
     }
     const subpath = path.slice('/dashboard/api'.length);
     return handleDashboardApi(method, subpath, body, req, res);
   }
 
-  // ─── Auth management (no API key required) ─────────────
+  if (path === '/auth/status' || path === '/auth/accounts' || path.startsWith('/auth/accounts/') || path === '/auth/login') {
+    if (!validateApiKey(extractToken(req))) {
+      return json(res, 401, { error: { message: 'Invalid API key', type: 'auth_error' } });
+    }
+  }
+
+  // ─── Auth management (admin API key required) ─────────
 
   if (path === '/auth/status') {
     return json(res, 200, { authenticated: isAuthenticated(), ...getAccountCount() });
