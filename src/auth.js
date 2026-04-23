@@ -979,12 +979,12 @@ async function refreshAllFirebaseTokens() {
       // Re-register to get a fresh API key (may be the same key)
       const { apiKey } = await reRegisterWithCodeium(idToken, proxy);
       if (apiKey && apiKey !== a.apiKey) {
-        log.info(`Firebase refresh: ${a.email} got new API key`);
+        log.info(`Firebase refresh: ${getAccountLogLabel(a)} got new API key`);
         a.apiKey = apiKey;
       }
       saveAccounts();
     } catch (e) {
-      log.warn(`Firebase refresh ${a.email} failed: ${e.message}`);
+      log.warn(`Firebase refresh ${getAccountLogLabel(a)} failed: ${e.message}`);
     }
   }
 }
@@ -1059,7 +1059,7 @@ export async function initAuth() {
   for (const a of accounts) {
     if (a.status !== 'active') continue;
     try { await ensureLsForAccount(a.id); }
-    catch (e) { log.warn(`LS/account warmup failed for ${a.email}: ${e.message}`); }
+    catch (e) { log.warn(`LS/account warmup failed for ${getAccountLogLabel(a)}: ${e.message}`); }
   }
 
   const counts = getAccountCount();
