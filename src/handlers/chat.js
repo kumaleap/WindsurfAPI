@@ -931,6 +931,25 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
             const lastText = onlyText
               ? staged.reduce((tail, entry) => entry.value || tail, '')
               : '';
+
+            // Conservative tool-mode streaming:
+            // - Keep provisional prose buffered while the model is still deciding
+            //   whether to emit tool calls.
+            // - If a tool call appears in this round, drop any buffered prose so
+            //   the client only sees canonical tool_calls, not half-written
+            //   planning text that the model would not keep in its final answer.
+            if (emulateTools) {
+              if (hasToolCall) {
+                const toolEntries = staged.filter((entry) => entry.kind === 'tool');
+                staged.length = 0;
+                stagedChars = 0;
+                stagedFirstAt = 0;
+                for (const entry of toolEntries) emitToolCallDelta(entry.value, entry.index);
+                return;
+              }
+              if (!force) return;
+            }
+
             const firstTextFastLane = !committedOutput
               && onlyText
               && !hasToolCall
