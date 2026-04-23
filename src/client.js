@@ -38,7 +38,12 @@ function getCascadePollInterval({ sawText, totalThinking, msSinceGrowth }) {
 function contentToString(content) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
-    return content.map(p => (typeof p?.text === 'string' ? p.text : JSON.stringify(p))).join('');
+    return content.map((part) => {
+      if (typeof part?.text === 'string') return part.text;
+      if (typeof part?.image_url?.url === 'string') return `[image:${part.image_url.url.slice(0, 96)}]`;
+      if (typeof part?.image_url === 'string') return `[image:${part.image_url.slice(0, 96)}]`;
+      return JSON.stringify(part);
+    }).join('');
   }
   return content == null ? '' : JSON.stringify(content);
 }

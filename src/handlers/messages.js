@@ -72,6 +72,40 @@ function buildThinkingBudgetSystemMessage(thinkingConfig) {
   ].join('\n');
 }
 
+function anthropicImageSourceToUrl(source) {
+  if (!source || typeof source !== 'object') return null;
+  if (source.type === 'url' && typeof source.url === 'string' && source.url) return source.url;
+  if (source.type === 'base64' && typeof source.data === 'string' && source.data) {
+    const mediaType = typeof source.media_type === 'string' && source.media_type ? source.media_type : 'application/octet-stream';
+    return `data:${mediaType};base64,${source.data}`;
+  }
+  return null;
+}
+
+function summarizeAnthropicDocument(block) {
+  const sourceType = typeof block?.source?.type === 'string' ? block.source.type : 'unknown';
+  const mediaType = typeof block?.source?.media_type === 'string' ? block.source.media_type : 'unknown';
+  const title = typeof block?.title === 'string' && block.title.trim() ? ` title="${block.title.trim()}"` : '';
+  const context = typeof block?.context === 'string' && block.context.trim() ? ` context="${block.context.trim()}"` : '';
+  return `[document input source=${sourceType} media_type=${mediaType}${title}${context}]`;
+}
+
+function anthropicBlockToOpenAIContentPart(block) {
+  if (!block || typeof block !== 'object') return null;
+  if (block.type === 'text') {
+    return { type: 'text', text: block.text || '' };
+  }
+  if (block.type === 'image') {
+    const url = anthropicImageSourceToUrl(block.source);
+    if (url) return { type: 'image_url', image_url: { url } };
+    return { type: 'text', text: '[image input omitted: unsupported source]' };
+  }
+  if (block.type === 'document') {
+    return { type: 'text', text: summarizeAnthropicDocument(block) };
+  }
+  return null;
+}
+
 function mapErrorType(type) {
   switch (type) {
     case 'invalid_request':
@@ -111,12 +145,13 @@ function anthropicToOpenAI(body) {
     if (typeof m.content === 'string') {
       messages.push({ role, content: m.content });
     } else if (Array.isArray(m.content)) {
-      const textParts = [];
+      const contentParts = [];
       const toolCalls = [];
       const toolResults = [];
       for (const block of m.content) {
-        if (block.type === 'text') {
-          textParts.push(block.text || '');
+        const openaiPart = anthropicBlockToOpenAIContentPart(block);
+        if (openaiPart) {
+          contentParts.push(openaiPart);
         } else if (block.type === 'thinking') {
           // Thinking blocks from assistant history — skip; the model will regenerate
         } else if (block.type === 'tool_use' && role === 'assistant') {
@@ -137,11 +172,11 @@ function anthropicToOpenAI(body) {
       if (toolCalls.length) {
         messages.push({
           role: 'assistant',
-          content: textParts.length ? textParts.join('\n') : null,
+          content: contentParts.length ? contentParts : null,
           tool_calls: toolCalls,
         });
-      } else if (textParts.length) {
-        messages.push({ role, content: textParts.join('\n') });
+      } else if (contentParts.length) {
+        messages.push({ role, content: contentParts });
       }
       for (const tr of toolResults) messages.push(tr);
     }

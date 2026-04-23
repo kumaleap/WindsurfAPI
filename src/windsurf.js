@@ -145,6 +145,13 @@ export function buildRawGetChatMessageRequest(apiKey, messages, modelEnum, model
   const parts = [];
   const conversationId = randomUUID();
 
+  const flattenContentPart = (part) => {
+    if (typeof part?.text === 'string') return part.text;
+    if (typeof part?.image_url?.url === 'string') return `[image:${part.image_url.url.slice(0, 96)}]`;
+    if (typeof part?.image_url === 'string') return `[image:${part.image_url.slice(0, 96)}]`;
+    return JSON.stringify(part);
+  };
+
   // Field 1: Metadata
   parts.push(writeMessageField(1, buildMetadata(apiKey)));
 
@@ -166,7 +173,7 @@ export function buildRawGetChatMessageRequest(apiKey, messages, modelEnum, model
     let source;
     let text;
     const baseText = typeof msg.content === 'string' ? msg.content
-      : Array.isArray(msg.content) ? msg.content.filter(c => c.type === 'text').map(c => c.text).join('\n')
+      : Array.isArray(msg.content) ? msg.content.map(flattenContentPart).join('\n')
       : msg.content == null ? '' : JSON.stringify(msg.content);
 
     switch (msg.role) {
