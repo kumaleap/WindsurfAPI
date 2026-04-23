@@ -2387,7 +2387,7 @@ const App = {
         <td style="color:${a.errorCount > 0 ? 'var(--error)' : 'inherit'}">${a.errorCount}</td>
         <td class="text-sm nowrap">${a.lastUsed ? new Date(a.lastUsed).toLocaleString() : '-'}</td>
         <td class="nowrap">
-          <code style="cursor:pointer" title="点击复制" onclick="App.copyKey('${this.esc(a.apiKey)}')">${a.keyPrefix}</code>
+          <code style="cursor:pointer" title="点击复制" onclick="App.copyKey('${this.escJsSingle(a.apiKey)}')">${a.keyPrefix}</code>
         </td>
         <td class="nowrap">
           <div class="btn-group">
@@ -2673,7 +2673,7 @@ const App = {
     if (current.length > 0) {
       document.getElementById('model-list-current').innerHTML = `
         <div class="text-xs text-muted" style="margin-bottom:6px">当前清单 (${current.length})</div>
-        <div class="model-chips">${current.map(m => `<span class="model-chip selected">${m}<span class="remove" onclick="App.removeModelFromList('${m}')">×</span></span>`).join('')}</div>`;
+        <div class="model-chips">${current.map(m => `<span class="model-chip selected">${this.esc(m)}<span class="remove" onclick="App.removeModelFromList('${this.escJsSingle(m)}')">×</span></span>`).join('')}</div>`;
     } else {
       document.getElementById('model-list-current').innerHTML = '<div class="text-xs text-dim">清单为空</div>';
     }
@@ -2703,7 +2703,7 @@ const App = {
         <div class="provider-label">${prov}</div>
         <div class="model-chips">${models.map(m => {
           const inList = list.includes(m.id);
-          return `<span class="model-chip ${inList ? 'selected' : ''}" onclick="App.toggleModelInList('${m.id}')">${m.name}</span>`;
+          return `<span class="model-chip ${inList ? 'selected' : ''}" onclick="App.toggleModelInList('${this.escJsSingle(m.id)}')">${this.esc(m.name)}</span>`;
         }).join('')}</div>
       </div>
     `).join('') || '<div class="text-sm text-dim">没有符合的模型</div>';
@@ -2766,7 +2766,7 @@ const App = {
         <td>${p ? `<code>${p.type}://${p.username ? p.username + '@' : ''}${p.host}:${p.port}</code>` : '<span class="text-sm text-dim">无（使用全局）</span>'}</td>
         <td class="nowrap">
           <div class="btn-group">
-            <button class="btn btn-outline btn-xs" onclick="App.editAccountProxy('${a.id}','${this.esc(a.email)}')">配置</button>
+            <button class="btn btn-outline btn-xs" onclick="App.editAccountProxy('${a.id}','${this.escJsSingle(a.email)}')">配置</button>
             ${p ? `<button class="btn btn-ghost btn-xs" style="color:var(--error)" onclick="App.clearAccountProxy('${a.id}')">清除</button>` : ''}
           </div>
         </td>
@@ -3037,8 +3037,8 @@ const App = {
                 ${isDefault ? '' : '<span class="text-xs" style="background:var(--accent);color:#fff;padding:2px 6px;border-radius:3px">已自定义</span>'}
               </div>
               <div class="btn-group">
-                <button class="btn btn-ghost btn-xs" onclick="App.resetIdentityPrompt('${provider}')" ${isDefault ? 'disabled' : ''}>恢复默认</button>
-                <button class="btn btn-primary btn-xs" onclick="App.saveIdentityPrompt('${provider}')">保存</button>
+                <button class="btn btn-ghost btn-xs" onclick="App.resetIdentityPrompt('${this.escJsSingle(provider)}')" ${isDefault ? 'disabled' : ''}>恢复默认</button>
+                <button class="btn btn-primary btn-xs" onclick="App.saveIdentityPrompt('${this.escJsSingle(provider)}')">保存</button>
               </div>
             </div>
             <textarea id="id-prompt-${provider}" class="input" rows="3" style="width:100%;font-family:var(--mono);font-size:12px;resize:vertical;line-height:1.5">${this.esc(text)}</textarea>
@@ -3191,6 +3191,17 @@ const App = {
     }
   },
   esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); },
+  escJsSingle(s) {
+    return String(s == null ? '' : s)
+      .replace(/\\/g, '\\\\')
+      .replace(/'/g, "\\'")
+      .replace(/\r/g, '\\r')
+      .replace(/\n/g, '\\n')
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '\\x3C')
+      .replace(/>/g, '\\x3E');
+  },
 };
 
 window.addEventListener('DOMContentLoaded', () => App.init());
