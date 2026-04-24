@@ -57,8 +57,10 @@ const LONG_TOOL_OUTPUT_GUARD_INPUT_CHARS = 120_000;
 const DEFAULT_HAIKU_OUTPUT_GUARD_TOKENS = 900;
 const DEFAULT_TOOL_OUTPUT_GUARD_TOKENS = 1200;
 const TRANSIENT_MODEL_COOLDOWN_MS = 45_000;
-const OVERSIZED_SHORT_STOP_RETRY_INPUT_CHARS = 180_000;
-const OVERSIZED_SHORT_STOP_RETRY_TOOL_RESULT_CHARS = 80_000;
+const SHORT_TOOL_STOP_RETRY_DISABLE_INPUT_CHARS = 30_000;
+const SHORT_TOOL_STOP_RETRY_DISABLE_TOOL_RESULT_CHARS = 16_000;
+const SHORT_TOOL_STOP_RETRY_SINGLE_INPUT_CHARS = 10_000;
+const SHORT_TOOL_STOP_RETRY_SINGLE_TOOL_RESULT_CHARS = 6_000;
 
 function endsAtNaturalBoundary(text) {
   if (!text) return false;
@@ -496,12 +498,17 @@ function buildOversizedContextMessage(lastHumanUserExcerpt = '', reason, summary
   return `Older tool history was condensed automatically, but ${why}${detailSuffix}. Continuing would sharply increase latency and reduce stability. Start a fresh session or summarize earlier tool output before continuing.`;
 }
 
-function shouldRetrySuspiciousShortToolStop(contextSummary) {
-  if (!contextSummary) return true;
-  return !(
-    contextSummary.inputChars >= OVERSIZED_SHORT_STOP_RETRY_INPUT_CHARS
-    || contextSummary.toolResultChars >= OVERSIZED_SHORT_STOP_RETRY_TOOL_RESULT_CHARS
-  );
+function getShortToolStopRetryBudget(contextSummary) {
+  if (!contextSummary) return 2;
+  if (
+    contextSummary.inputChars >= SHORT_TOOL_STOP_RETRY_DISABLE_INPUT_CHARS
+    || contextSummary.toolResultChars >= SHORT_TOOL_STOP_RETRY_DISABLE_TOOL_RESULT_CHARS
+  ) return 0;
+  if (
+    contextSummary.inputChars >= SHORT_TOOL_STOP_RETRY_SINGLE_INPUT_CHARS
+    || contextSummary.toolResultChars >= SHORT_TOOL_STOP_RETRY_SINGLE_TOOL_RESULT_CHARS
+  ) return 1;
+  return 2;
 }
 
 function genId() {
@@ -1261,12 +1268,14 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
         cacheKey: !!ckey,
         inputChars: contextSummary?.inputChars ?? estimateMessageChars(messages),
         toolResultChars: contextSummary?.toolResultChars ?? 0,
+        shortToolStopRetryBudget: getShortToolStopRetryBudget(contextSummary),
       });
       const tried = [];
       let rolePrinted = false;
       let committedOutput = false;
       let currentApiKey = null;
       let lastErr = null;
+      let shortToolStopRetries = 0;
       // Dynamic: try every active account in the pool (capped at 10) so a
   // large pool with many rate-limited accounts can still fall through
   // to a free one. Was hardcoded 3 — in pools bigger than 3 with the
@@ -1607,13 +1616,18 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
                 })
               : null;
             if (pendingShortReason === 'short_for_long_context') {
-              if (!shouldRetrySuspiciousShortToolStop(contextSummary)) {
-                slog.warn('Skipping short tool-stop retry for oversized context', {
+              const retryBudget = getShortToolStopRetryBudget(contextSummary);
+              if (shortToolStopRetries >= retryBudget) {
+                slog.warn('Skipping short tool-stop retry after budget exhaustion', {
                   attempt: attempt + 1,
                   inputChars: contextSummary?.inputChars ?? _msgCharsStream,
                   toolResultChars: contextSummary?.toolResultChars ?? 0,
+                  retryBudget,
+                  shortToolStopRetries,
+                  pendingTextChars: pendingText.trim().length,
                 });
               } else {
+                shortToolStopRetries++;
                 streamMetrics.retriesBeforeCommit++;
                 cooldownAccountModel(currentApiKey, modelKey, TRANSIENT_MODEL_COOLDOWN_MS, 'short_tool_stop');
                 slog.warn('Retrying suspicious short tool-mode stop before visible output', {
@@ -1621,6 +1635,8 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
                   pendingTextChars: pendingText.trim().length,
                   inputChars: _msgCharsStream,
                   cacheSkipReason: pendingShortReason,
+                  retryBudget,
+                  shortToolStopRetries,
                 });
                 continue;
               }
