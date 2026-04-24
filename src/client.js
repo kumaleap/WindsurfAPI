@@ -239,7 +239,7 @@ export class WindsurfClient {
    * @param {object} opts - { onChunk, onEnd, onError }
    */
   async cascadeChat(messages, modelEnum, modelUid, opts = {}) {
-    const { onChunk, onEnd, onError, signal, reuseEntry, toolPreamble } = opts;
+    let { onChunk, onEnd, onError, signal, reuseEntry, toolPreamble } = opts;
     const aborted = () => signal?.aborted;
     const inputChars = messages.reduce((n, m) => n + contentToString(m?.content).length, 0);
     let activeReuseEntry = reuseEntry || null;
@@ -332,6 +332,39 @@ export class WindsurfClient {
         sessionId = sessionState?.sessionId || randomUUID();
         if (activeReuseEntry) activeReuseEntry.cascadeId = null; // force StartCascade
         cascadeId = await openCascade();
+      }
+
+      // A resumed cascade already contains every prior turn in its trajectory.
+      // Track absolute offsets so we don't replay older planner-response steps
+      // or double-count usage on later turns.
+      let stepOffset = Number.isInteger(activeReuseEntry?.stepOffset) && activeReuseEntry.stepOffset >= 0
+        ? activeReuseEntry.stepOffset
+        : 0;
+      let generatorOffset = Number.isInteger(activeReuseEntry?.generatorOffset) && activeReuseEntry.generatorOffset >= 0
+        ? activeReuseEntry.generatorOffset
+        : 0;
+      if (activeReuseEntry?.cascadeId && (!Number.isInteger(activeReuseEntry?.stepOffset) || !Number.isInteger(activeReuseEntry?.generatorOffset))) {
+        try {
+          if (!Number.isInteger(activeReuseEntry?.stepOffset)) {
+            const resumeStepsResp = await grpcUnary(
+              this.port, this.csrfToken,
+              `${LS_SERVICE}/GetCascadeTrajectorySteps`,
+              grpcFrame(buildGetTrajectoryStepsRequest(cascadeId, 0))
+            );
+            stepOffset = parseTrajectorySteps(resumeStepsResp).length;
+          }
+          if (!Number.isInteger(activeReuseEntry?.generatorOffset)) {
+            const resumeMetaResp = await grpcUnary(
+              this.port, this.csrfToken,
+              `${LS_SERVICE}/GetCascadeTrajectoryGeneratorMetadata`,
+              grpcFrame(buildGetGeneratorMetadataRequest(cascadeId, 0)),
+              5000
+            );
+            generatorOffset = parseGeneratorMetadata(resumeMetaResp)?.entryCount || 0;
+          }
+        } catch (e) {
+          log.warn(`Cascade resume snapshot failed: ${e.message}`);
+        }
       }
 
       // Build the text payload. Two cases:
@@ -459,7 +492,7 @@ export class WindsurfClient {
         if (!cascadeTiming.firstPollAt) cascadeTiming.firstPollAt = Date.now();
 
         // Get steps
-        const stepsProto = buildGetTrajectoryStepsRequest(cascadeId, 0);
+        const stepsProto = buildGetTrajectoryStepsRequest(cascadeId, stepOffset);
         const stepsResp = await grpcUnary(
           this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectorySteps`, grpcFrame(stepsProto)
         );
@@ -650,10 +683,12 @@ export class WindsurfClient {
           const canBreak = sawText ? idleCount >= 2 : idleCount >= 4;
           if (canBreak) {
             // Final sweep
+            const finalStepsProto = buildGetTrajectoryStepsRequest(cascadeId, stepOffset);
             const finalResp = await grpcUnary(
-              this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectorySteps`, grpcFrame(stepsProto)
+              this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectorySteps`, grpcFrame(finalStepsProto)
             );
             const finalSteps = parseTrajectorySteps(finalResp);
+            lastStepCount = finalSteps.length;
             for (let i = 0; i < finalSteps.length; i++) {
               const step = finalSteps[i];
               const responseText = step.responseText || '';
@@ -708,7 +743,7 @@ export class WindsurfClient {
         polls: pollCount,
         textLen: totalYielded,
         thinkingLen: totalThinking,
-        stepCount: Math.max(yieldedByStep.size, thinkingByStep.size, lastStepCount),
+        stepCount: stepOffset + Math.max(yieldedByStep.size, thinkingByStep.size, lastStepCount),
         toolCalls: seenToolCallIds.size,
         sawActive,
         sawText,
@@ -733,7 +768,7 @@ export class WindsurfClient {
       // itself is already formed.
       let serverUsage = null;
       try {
-        const metaReq = buildGetGeneratorMetadataRequest(cascadeId, 0);
+        const metaReq = buildGetGeneratorMetadataRequest(cascadeId, generatorOffset);
         const metaResp = await grpcUnary(
           this.port, this.csrfToken,
           `${LS_SERVICE}/GetCascadeTrajectoryGeneratorMetadata`,
@@ -771,6 +806,10 @@ export class WindsurfClient {
       cascadeTiming.completedAt = Date.now();
       chunks.cascadeId = cascadeId;
       chunks.sessionId = sessionId;
+      chunks.stepOffset = stepOffset + Math.max(yieldedByStep.size, thinkingByStep.size, lastStepCount);
+      chunks.generatorOffset = serverUsage?.entryCount != null
+        ? generatorOffset + serverUsage.entryCount
+        : null;
       chunks.toolCalls = toolCalls;
       chunks.usage = serverUsage;
       chunks.timings = summarizeCascadeTiming();

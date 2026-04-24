@@ -751,6 +751,7 @@ export async function handleChatCompletions(body) {
   const reuseEnabled = useCascade && !emulateTools && isExperimentalEnabled('cascadeConversationReuse');
   const fpBefore = reuseEnabled ? fingerprintBefore(messages) : null;
   let reuseEntry = reuseEnabled ? poolCheckout(fpBefore) : null;
+  let checkedOutReuseEntry = reuseEntry;
   if (reuseEntry) log.info(`Chat: cascade reuse HIT cascadeId=${reuseEntry.cascadeId.slice(0, 8)}… model=${displayModel}`);
 
   // Non-stream: retry with a different account on model-not-available errors
@@ -802,6 +803,7 @@ export async function handleChatCompletions(body) {
     // born on has been replaced, the cascade_id is dead.
     if (reuseEntry && reuseEntry.lsPort !== ls.port) {
       log.info('Chat: cascade reuse skipped — LS port changed');
+      checkedOutReuseEntry = null;
       reuseEntry = null;
     }
     const _msgChars = (messages || []).reduce((n, m) => {
@@ -858,8 +860,16 @@ export async function handleChatCompletions(body) {
   if (!lastErr || lastErr.status === 429) {
     const rl = isAllRateLimited(modelKey);
     if (rl.allLimited) {
+      if (checkedOutReuseEntry && fpBefore) {
+        poolCheckin(fpBefore, checkedOutReuseEntry);
+        log.info('Chat: restored checked-out cascade after rate limit');
+      }
       return { status: 429, body: { error: { message: `${displayModel} 所有账号均已达速率限制，请 ${Math.ceil(rl.retryAfterMs / 1000)} 秒后重试`, type: 'rate_limit_exceeded', retry_after_ms: rl.retryAfterMs } } };
     }
+  }
+  if (checkedOutReuseEntry && fpBefore) {
+    poolCheckin(fpBefore, checkedOutReuseEntry);
+    log.info('Chat: restored checked-out cascade after failed request');
   }
   return lastErr || { status: 503, body: { error: { message: 'No active accounts available', type: 'pool_exhausted' } } };
 }
@@ -882,7 +892,12 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
         if (c.text) allText += c.text;
         if (c.thinking) allThinking += c.thinking;
       }
-      cascadeMeta = { cascadeId: chunks.cascadeId, sessionId: chunks.sessionId };
+      cascadeMeta = {
+        cascadeId: chunks.cascadeId,
+        sessionId: chunks.sessionId,
+        stepOffset: chunks.stepOffset,
+        generatorOffset: chunks.generatorOffset,
+      };
       serverUsage = chunks.usage || null;
       // Always strip <tool_call>/<tool_result> blocks from Cascade text.
       // - emulateTools=true: parsed tool_calls become OpenAI-format tool_calls.
@@ -930,6 +945,8 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
         sessionId: cascadeMeta.sessionId,
         lsPort: poolCtx.lsPort,
         apiKey: poolCtx.apiKey,
+        stepOffset: Number.isFinite(cascadeMeta.stepOffset) ? cascadeMeta.stepOffset : poolCtx.reuseEntry?.stepOffset,
+        generatorOffset: Number.isFinite(cascadeMeta.generatorOffset) ? cascadeMeta.generatorOffset : poolCtx.reuseEntry?.generatorOffset,
         createdAt: poolCtx.reuseEntry?.createdAt,
       });
     }
@@ -1139,6 +1156,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
       const reuseEnabled = useCascade && !emulateTools && isExperimentalEnabled('cascadeConversationReuse');
       const fpBefore = reuseEnabled ? fingerprintBefore(messages) : null;
       let reuseEntry = reuseEnabled ? poolCheckout(fpBefore) : null;
+      let checkedOutReuseEntry = reuseEntry;
       if (reuseEntry) log.info(`Chat: cascade reuse HIT cascadeId=${reuseEntry.cascadeId.slice(0, 8)}… stream model=${model}`);
 
       const collectedToolCalls = [];
@@ -1384,6 +1402,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
           if (!ls) { lastErr = new Error('No LS instance available'); break; }
           if (reuseEntry && reuseEntry.lsPort !== ls.port) {
             log.info('Chat: cascade reuse skipped — LS port changed');
+            checkedOutReuseEntry = null;
             reuseEntry = null;
           }
           const _msgCharsStream = estimateMessageChars(messages);
@@ -1497,6 +1516,8 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
                 sessionId: cascadeResult.sessionId,
                 lsPort: ls.port,
                 apiKey: currentApiKey,
+                stepOffset: Number.isFinite(cascadeResult.stepOffset) ? cascadeResult.stepOffset : reuseEntry?.stepOffset,
+                generatorOffset: Number.isFinite(cascadeResult.generatorOffset) ? cascadeResult.generatorOffset : reuseEntry?.generatorOffset,
                 createdAt: reuseEntry?.createdAt,
               });
             }
@@ -1613,6 +1634,10 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
             const errMsg = rl.allLimited
               ? `${model} 所有账号均已达速率限制，请 ${Math.ceil(rl.retryAfterMs / 1000)} 秒后重试`
               : sanitizeText(lastErr?.message || 'no accounts');
+            if (checkedOutReuseEntry && fpBefore) {
+              poolCheckin(fpBefore, checkedOutReuseEntry);
+              log.info('Chat: restored checked-out cascade after failed stream');
+            }
             send({
               error: {
                 message: errMsg,
