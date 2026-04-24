@@ -753,7 +753,11 @@ export function updateCapability(apiKey, modelKey, ok, reason = '') {
     lastCheck: Date.now(),
     reason,
   };
-  account.tier = inferTier(account.capabilities);
+  // Keep authoritative tier sources (manual override / GetUserStatus) from
+  // being overwritten by canary-based inference after ordinary requests.
+  if (!account.tierManual && !account.userStatusLastFetched) {
+    account.tier = inferTier(account.capabilities);
+  }
   saveAccounts();
 }
 

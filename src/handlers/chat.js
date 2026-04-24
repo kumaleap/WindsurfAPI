@@ -23,7 +23,7 @@ import {
   normalizeMessagesForCascade, ToolCallStreamParser, parseToolCallsFromText,
   buildToolPreambleForProto,
 } from './tool-emulation.js';
-import { sanitizeText, PathSanitizeStream } from '../sanitize.js';
+import { sanitizeText, sanitizeToolCall, PathSanitizeStream } from '../sanitize.js';
 
 const HEARTBEAT_MS = 15_000;
 const QUEUE_RETRY_MS = 1_000;
@@ -918,10 +918,7 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
     allText = sanitizeText(allText);
     allThinking = sanitizeText(allThinking);
     if (toolCalls.length) {
-      toolCalls = toolCalls.map(tc => ({
-        ...tc,
-        argumentsJson: sanitizeText(tc.argumentsJson || ''),
-      }));
+      toolCalls = toolCalls.map(tc => sanitizeToolCall(tc));
     }
 
     // Check the cascade back into the pool under the *post-turn* fingerprint
