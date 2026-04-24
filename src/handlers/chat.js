@@ -17,6 +17,11 @@ import { isExperimentalEnabled, getIdentityPromptFor } from '../runtime-config.j
 import { checkMessageRateLimit } from '../windsurf-api.js';
 import { getEffectiveProxy } from '../dashboard/proxy-config.js';
 import {
+  compactOpenAIMessageHistory,
+  getOversizedContextReason,
+  summarizeOpenAIContext,
+} from '../context-pruning.js';
+import {
   fingerprintBefore, fingerprintAfter, checkout as poolCheckout, checkin as poolCheckin,
 } from '../conversation-pool.js';
 import {
@@ -458,6 +463,37 @@ function buildToolResultContinuationSystemMessage(lastHumanUserExcerpt = '') {
   return lines.join('\n');
 }
 
+function buildSlashCommandToolsRequiredMessage(lastHumanUserExcerpt = '') {
+  if (containsCjk(lastHumanUserExcerpt)) {
+    return '检测到 slash 命令，但当前请求没有附带可执行工具。请使用支持工具调用的 Claude Code/agent 客户端重新发送，或改成普通自然语言请求。';
+  }
+  return 'This request looks like a slash command, but no executable tools were attached. Resend it from a tool-enabled Claude Code/agent client, or rewrite it as a normal natural-language request.';
+}
+
+function buildOversizedContextMessage(lastHumanUserExcerpt = '', reason, summary) {
+  const details = [];
+  if (summary?.inputChars) details.push(`input=${Math.round(summary.inputChars / 1024)}KB`);
+  if (summary?.messages) details.push(`messages=${summary.messages}`);
+  if (summary?.toolResultChars) details.push(`tool_results=${Math.round(summary.toolResultChars / 1024)}KB`);
+  const detailSuffix = details.length ? ` (${details.join(', ')})` : '';
+
+  if (containsCjk(lastHumanUserExcerpt)) {
+    const why = reason === 'tool_result_chars'
+      ? '工具结果历史仍然过大'
+      : reason === 'message_count'
+        ? '历史轮数仍然过多'
+        : '上下文仍然过大';
+    return `请求已自动压缩旧工具历史，但${why}${detailSuffix}，继续发送只会显著拉高延迟并降低稳定性。请新开会话，或先让客户端总结较早的工具结果后再继续。`;
+  }
+
+  const why = reason === 'tool_result_chars'
+    ? 'tool-result history is still too large'
+    : reason === 'message_count'
+      ? 'too many turns still remain'
+      : 'the remaining context is still too large';
+  return `Older tool history was condensed automatically, but ${why}${detailSuffix}. Continuing would sharply increase latency and reduce stability. Start a fresh session or summarize earlier tool output before continuing.`;
+}
+
 function genId() {
   return 'chatcmpl-' + randomUUID().replace(/-/g, '').slice(0, 29);
 }
@@ -603,6 +639,47 @@ export async function handleChatCompletions(body) {
     ];
   }
 
+  const lastHumanUserExcerpt = getLastHumanUserMessageExcerpt(messages);
+  const originalContextSummary = summarizeOpenAIContext(messages);
+  const historyCompaction = compactOpenAIMessageHistory(messages);
+  if (historyCompaction.stats.compacted) {
+    messages = historyCompaction.messages;
+    log.warn('Chat context compacted before model execution', {
+      originalMessages: historyCompaction.stats.original.messages,
+      compactedMessages: historyCompaction.stats.compactedStats?.messages ?? messages.length,
+      originalInputChars: historyCompaction.stats.original.inputChars,
+      compactedInputChars: historyCompaction.stats.compactedStats?.inputChars ?? estimateMessageChars(messages),
+      omittedAssistantToolTurns: historyCompaction.stats.omittedAssistantToolTurns,
+      omittedToolResults: historyCompaction.stats.omittedToolResults,
+      omittedToolChars: historyCompaction.stats.omittedToolChars,
+      summaryInserted: historyCompaction.stats.summaryInserted,
+    });
+  }
+
+  const compactedContextSummary = summarizeOpenAIContext(messages);
+  const oversizedContextReason = getOversizedContextReason(compactedContextSummary);
+  if (oversizedContextReason) {
+    const message = buildOversizedContextMessage(lastHumanUserExcerpt, oversizedContextReason, compactedContextSummary);
+    log.warn('Rejecting oversized context after compaction', {
+      reason: oversizedContextReason,
+      originalMessages: originalContextSummary.messages,
+      compactedMessages: compactedContextSummary.messages,
+      originalInputChars: originalContextSummary.inputChars,
+      compactedInputChars: compactedContextSummary.inputChars,
+      originalToolResultChars: originalContextSummary.toolResultChars,
+      compactedToolResultChars: compactedContextSummary.toolResultChars,
+    });
+    return {
+      status: 413,
+      body: {
+        error: {
+          message,
+          type: 'invalid_request',
+        },
+      },
+    };
+  }
+
   const requestedModel = reqModel || config.defaultModel;
   const modelKey = resolveModel(requestedModel);
   const modelInfo = getModelInfo(modelKey);
@@ -659,9 +736,17 @@ export async function handleChatCompletions(body) {
       messages: requestSummary.messages,
       lastUserChars: requestSummary.lastUserChars,
     });
+    return {
+      status: 400,
+      body: {
+        error: {
+          message: buildSlashCommandToolsRequiredMessage(lastHumanUserExcerpt),
+          type: 'invalid_request',
+        },
+      },
+    };
   }
   const outputGuard = buildOutputGuardSystemMessage(modelKey, max_tokens, activeToolCallMode, inputChars);
-  const lastHumanUserExcerpt = getLastHumanUserMessageExcerpt(messages);
   const replyLanguageGuard = buildReplyLanguageSystemMessage(lastHumanUserExcerpt);
   const trailingToolResult = Array.isArray(messages) && messages[messages.length - 1]?.role === 'tool';
 
