@@ -254,7 +254,9 @@ export class WindsurfClient {
    * @param {object} opts - { onChunk, onEnd, onError }
    */
   async cascadeChat(messages, modelEnum, modelUid, opts = {}) {
-    let { onChunk, onEnd, onError, signal, reuseEntry, toolPreamble } = opts;
+    let {
+      onChunk, onEnd, onError, signal, reuseEntry, toolPreamble, activeToolCallMode = false,
+    } = opts;
     const aborted = () => signal?.aborted;
     const inputChars = messages.reduce((n, m) => n + contentToString(m?.content).length, 0);
     let activeReuseEntry = reuseEntry || null;
@@ -591,9 +593,11 @@ export class WindsurfClient {
         // Cap at maxWait (180s): long-context requests can legitimately take
         // that long to emit the first token from Cascade. Was 90s which
         // still tripped on very long prompts (issue #5).
-        const coldStallMs = Math.min(maxWait, 30_000 + Math.floor(inputChars / 1500) * 5_000);
+        const coldStallMs = activeToolCallMode
+          ? Math.min(16_000, 8_000 + Math.floor(inputChars / 12_000) * 1_000)
+          : Math.min(maxWait, 30_000 + Math.floor(inputChars / 1500) * 5_000);
         if (elapsed > coldStallMs && sawActive && !sawText && seenToolCallIds.size === 0) {
-          log.warn(`Cascade cold stall: ${elapsed}ms active without any text or tool call (threshold=${coldStallMs}ms, inputChars=${inputChars}), bailing`);
+          log.warn(`Cascade cold stall: ${elapsed}ms active without any text or tool call (threshold=${coldStallMs}ms, inputChars=${inputChars}, toolMode=${activeToolCallMode}), bailing`);
           endReason = 'stall_cold';
           const err = new Error(`Cascade planner stalled — no output after ${Math.round(coldStallMs / 1000)}s`);
           err.isModelError = true;
