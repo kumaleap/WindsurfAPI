@@ -31,6 +31,7 @@ export const MODELS = {
   'claude-sonnet-4.6-thinking-1m':  { name: 'claude-sonnet-4.6-thinking-1m',  provider: 'anthropic', enumValue: 0,   modelUid: 'claude-sonnet-4-6-thinking-1m', credit: 16 },
   'claude-opus-4.6':                { name: 'claude-opus-4.6',                provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-4-6', credit: 6 },
   'claude-opus-4.6-thinking':       { name: 'claude-opus-4.6-thinking',       provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-4-6-thinking', credit: 8 },
+  'claude-opus-4-7-medium':         { name: 'claude-opus-4-7-medium',         provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-4-7-medium', credit: 8 },
 
   // ── GPT ─────────────────────────────────────────────────
   'gpt-4o':                         { name: 'gpt-4o',                         provider: 'openai', enumValue: 109, modelUid: 'MODEL_CHAT_GPT_4O_2024_08_06', credit: 1 },
@@ -136,7 +137,7 @@ export const MODELS = {
   'qwen-3-coder':                   { name: 'qwen-3-coder',                   provider: 'alibaba', enumValue: 325, credit: 0.5 },
 
   // ── Kimi ────────────────────────────────────────────────
-  'kimi-k2':                        { name: 'kimi-k2',                        provider: 'moonshot', enumValue: 0,   modelUid: 'MODEL_KIMI_K2', credit: 0.5 },
+  'kimi-k2':                        { name: 'kimi-k2',                        provider: 'moonshot', enumValue: 323, modelUid: 'MODEL_KIMI_K2', credit: 0.5 },
   'kimi-k2.5':                      { name: 'kimi-k2.5',                      provider: 'moonshot', enumValue: 0,   modelUid: 'kimi-k2-5', credit: 1 },
 
   // ── GLM ─────────────────────────────────────────────────
@@ -191,21 +192,43 @@ const ANTHROPIC_COMPAT_ALIASES = {
   'claude-sonnet-4.6-thinking[1m]': 'claude-sonnet-4.6-thinking-1m',
   'claude-3-5-sonnet-20241022': 'claude-sonnet-4.6',
   'claude-3-5-sonnet-20240620': 'claude-sonnet-4.6',
+  'claude-3-5-sonnet-latest': 'claude-sonnet-4.6',
   'claude-3-5-haiku-20241022': 'claude-4.5-haiku',
   'claude-3-opus-20240229': 'claude-opus-4.6',
   'claude-3-sonnet-20240229': 'claude-sonnet-4.6',
   'claude-3-haiku-20240307': 'claude-4.5-haiku',
   'claude-3-7-sonnet-20250219': 'claude-sonnet-4.6',
+  'claude-3-7-sonnet-latest': 'claude-sonnet-4.6',
   'claude-sonnet-4-20250514': 'claude-sonnet-4.6',
+  'claude-sonnet-4-0': 'claude-sonnet-4.6',
   'claude-opus-4-20250514': 'claude-opus-4.6',
+  'claude-opus-4-0': 'claude-opus-4.6',
+  'claude-opus-4-1': 'claude-opus-4.6',
   'claude-opus-4-1-20250805': 'claude-opus-4.6',
+  'claude-sonnet-4-5': 'claude-sonnet-4.6',
   'claude-sonnet-4-5-20250929': 'claude-sonnet-4.6',
+  'claude-opus-4-5': 'claude-opus-4.6',
   'claude-haiku-4-5-20251001': 'claude-4.5-haiku',
   'claude-opus-4-5-20251101': 'claude-opus-4.6',
-  'claude-opus-4-7': 'claude-opus-4.6',
+  'claude-opus-4-7': 'claude-opus-4-7-medium',
+  'claude-opus-4-7-latest': 'claude-opus-4-7-medium',
+  'claude-opus-4.7': 'claude-opus-4-7-medium',
+  'claude-opus-4.7-thinking': 'claude-opus-4-7-medium',
   'claude-2.1': 'claude-sonnet-4.6',
   'claude-2.0': 'claude-sonnet-4.6',
   'claude-instant-1.2': 'claude-4.5-haiku',
+};
+
+const OPENAI_COMPAT_ALIASES = {
+  'gpt-4o-2024-11-20': 'gpt-4o',
+  'gpt-4o-2024-08-06': 'gpt-4o',
+  'gpt-4o-2024-05-13': 'gpt-4o',
+  'gpt-4o-mini-2024-07-18': 'gpt-4o-mini',
+  'gpt-4.1-2025-04-14': 'gpt-4.1',
+  'gpt-4.1-mini-2025-04-14': 'gpt-4.1-mini',
+  'gpt-4.1-nano-2025-04-14': 'gpt-4.1-nano',
+  'gpt-5-2025-08-07': 'gpt-5',
+  'gpt-5-pro-2025-10-06': 'gpt-5-high',
 };
 
 const THINKING_MODEL_PREFERENCES = {
@@ -304,6 +327,9 @@ registerAlias(_lookup, 'gpt-5-4-mini-xhigh', 'gpt-5.4-mini-xhigh');
 for (const [alias, canonical] of Object.entries(ANTHROPIC_COMPAT_ALIASES)) {
   registerAlias(_lookup, alias, canonical);
 }
+for (const [alias, canonical] of Object.entries(OPENAI_COMPAT_ALIASES)) {
+  registerAlias(_lookup, alias, canonical);
+}
 
 /** Resolve user model name → internal model key. */
 export function resolveModel(name) {
@@ -376,6 +402,7 @@ export const MODEL_TIER_ACCESS = {
 // client-side model validation failures in tools that trust /v1/models.
 const MODEL_LIST_ALIASES = {
   ...ANTHROPIC_COMPAT_ALIASES,
+  ...OPENAI_COMPAT_ALIASES,
 };
 
 /** Models a given tier is entitled to. */
