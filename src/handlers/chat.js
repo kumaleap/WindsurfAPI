@@ -57,6 +57,8 @@ const LONG_TOOL_OUTPUT_GUARD_INPUT_CHARS = 120_000;
 const DEFAULT_HAIKU_OUTPUT_GUARD_TOKENS = 900;
 const DEFAULT_TOOL_OUTPUT_GUARD_TOKENS = 1200;
 const TRANSIENT_MODEL_COOLDOWN_MS = 45_000;
+const OVERSIZED_SHORT_STOP_RETRY_INPUT_CHARS = 180_000;
+const OVERSIZED_SHORT_STOP_RETRY_TOOL_RESULT_CHARS = 80_000;
 
 function endsAtNaturalBoundary(text) {
   if (!text) return false;
@@ -494,6 +496,14 @@ function buildOversizedContextMessage(lastHumanUserExcerpt = '', reason, summary
   return `Older tool history was condensed automatically, but ${why}${detailSuffix}. Continuing would sharply increase latency and reduce stability. Start a fresh session or summarize earlier tool output before continuing.`;
 }
 
+function shouldRetrySuspiciousShortToolStop(contextSummary) {
+  if (!contextSummary) return true;
+  return !(
+    contextSummary.inputChars >= OVERSIZED_SHORT_STOP_RETRY_INPUT_CHARS
+    || contextSummary.toolResultChars >= OVERSIZED_SHORT_STOP_RETRY_TOOL_RESULT_CHARS
+  );
+}
+
 function genId() {
   return 'chatcmpl-' + randomUUID().replace(/-/g, '').slice(0, 29);
 }
@@ -826,6 +836,7 @@ export async function handleChatCompletions(body) {
       toolPreamble,
       trailingToolResult,
       lastHumanUserExcerpt,
+      compactedContextSummary,
     );
   }
 
@@ -1148,7 +1159,7 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
   }
 }
 
-function streamResponse(id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, ckey, emulateTools, activeToolCallMode, toolPreamble, trailingToolResult, lastHumanUserExcerpt) {
+function streamResponse(id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, ckey, emulateTools, activeToolCallMode, toolPreamble, trailingToolResult, lastHumanUserExcerpt, contextSummary = null) {
   return {
     status: 200,
     stream: true,
@@ -1248,6 +1259,8 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
         emulateTools,
         activeToolCallMode,
         cacheKey: !!ckey,
+        inputChars: contextSummary?.inputChars ?? estimateMessageChars(messages),
+        toolResultChars: contextSummary?.toolResultChars ?? 0,
       });
       const tried = [];
       let rolePrinted = false;
@@ -1594,15 +1607,23 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
                 })
               : null;
             if (pendingShortReason === 'short_for_long_context') {
-              streamMetrics.retriesBeforeCommit++;
-              cooldownAccountModel(currentApiKey, modelKey, TRANSIENT_MODEL_COOLDOWN_MS, 'short_tool_stop');
-              slog.warn('Retrying suspicious short tool-mode stop before visible output', {
-                attempt: attempt + 1,
-                pendingTextChars: pendingText.trim().length,
-                inputChars: _msgCharsStream,
-                cacheSkipReason: pendingShortReason,
-              });
-              continue;
+              if (!shouldRetrySuspiciousShortToolStop(contextSummary)) {
+                slog.warn('Skipping short tool-stop retry for oversized context', {
+                  attempt: attempt + 1,
+                  inputChars: contextSummary?.inputChars ?? _msgCharsStream,
+                  toolResultChars: contextSummary?.toolResultChars ?? 0,
+                });
+              } else {
+                streamMetrics.retriesBeforeCommit++;
+                cooldownAccountModel(currentApiKey, modelKey, TRANSIENT_MODEL_COOLDOWN_MS, 'short_tool_stop');
+                slog.warn('Retrying suspicious short tool-mode stop before visible output', {
+                  attempt: attempt + 1,
+                  pendingTextChars: pendingText.trim().length,
+                  inputChars: _msgCharsStream,
+                  cacheSkipReason: pendingShortReason,
+                });
+                continue;
+              }
             }
             if (pendingTaskResetReason === 'task_reset_handoff') {
               streamMetrics.retriesBeforeCommit++;
