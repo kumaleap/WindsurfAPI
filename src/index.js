@@ -4,11 +4,12 @@ import { initAuth, isAuthenticated, saveAccountsSync } from './auth.js';
 import { startLanguageServer, waitForReady, isLanguageServerRunning, stopLanguageServer } from './langserver.js';
 import { startServer } from './server.js';
 import { config, log } from './config.js';
+import { VERSION_INFO } from './version-info.js';
 import { existsSync } from 'fs';
 import { execSync } from 'child_process';
 
 export const BRAND = 'WindsurfAPI bydwgx1337';
-export const VERSION = '1.2.0';
+export const VERSION = VERSION_INFO.version;
 
 async function main() {
   const banner = `
