@@ -161,8 +161,9 @@ export const MODELS = {
 
 function registerAlias(map, alias, canonical) {
   if (!alias || !canonical) return;
-  map.set(alias, canonical);
-  map.set(alias.toLowerCase(), canonical);
+  if (!map.has(alias)) map.set(alias, canonical);
+  const lower = alias.toLowerCase();
+  if (!map.has(lower)) map.set(lower, canonical);
 }
 
 function normalizeRequestedModelName(name) {
@@ -420,8 +421,10 @@ export function listModels() {
     owned_by: info.provider,
     _windsurf_id: id,
   }));
+  const seen = new Set(models.map(model => model.id));
 
   for (const [alias, canonical] of Object.entries(MODEL_LIST_ALIASES)) {
+    if (seen.has(alias)) continue;
     const info = MODELS[canonical];
     if (!info) continue;
     models.push({
@@ -432,6 +435,7 @@ export function listModels() {
       _windsurf_id: canonical,
       _alias_for: info.name,
     });
+    seen.add(alias);
   }
 
   return models;
