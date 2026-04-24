@@ -396,6 +396,10 @@ export class WindsurfClient {
       // OpenAI tools are serialized into a '<tool_call>{...}</tool_call>'
       // emission contract there). This function just stitches system + u/a
       // turns into the single text payload Cascade accepts.
+      const systemMsgs = messages.filter(m => m.role === 'system');
+      const convo = messages.filter(m => m.role === 'user' || m.role === 'assistant');
+      const sysText = systemMsgs.map(m => contentToString(m.content)).join('\n').trim();
+
       let text;
       let images = [];
       if (activeReuseEntry?.cascadeId) {
@@ -404,10 +408,6 @@ export class WindsurfClient {
         text = payload.text;
         images = payload.images;
       } else {
-        const systemMsgs = messages.filter(m => m.role === 'system');
-        const convo = messages.filter(m => m.role === 'user' || m.role === 'assistant');
-        const sysText = systemMsgs.map(m => contentToString(m.content)).join('\n').trim();
-
         if (convo.length <= 1) {
           const last = convo[convo.length - 1];
           if (last?.role === 'user') {
@@ -462,6 +462,32 @@ export class WindsurfClient {
         if (!isPanelMissing(e)) throw e;
         log.warn(`Panel state missing on Send, re-warming + restarting cascade port=${this.port}`);
         cascadeTiming.forcedRewarmCount++;
+        if (activeReuseEntry?.cascadeId && convo.length > 1) {
+          const latest = convo[convo.length - 1];
+          let latestText = latest ? contentToString(latest.content) : '';
+          if (latest?.role === 'user') {
+            const payload = await extractUserTurnPayload(latest.content);
+            latestText = payload.text;
+            images = payload.images;
+          }
+          const history = [];
+          for (let i = 0; i < convo.length - 1; i++) {
+            const msg = convo[i];
+            history.push(renderCascadeHistoryTurn(msg.role, contentToString(msg.content)));
+          }
+          text = [
+            '<conversation_context>',
+            'Use the wrapped turns below as prior context only. Do not repeat the wrapper tags or role attributes in your answer.',
+            ...history,
+            '</conversation_context>',
+            '',
+            '<current_user_message>',
+            latestText,
+            '</current_user_message>',
+          ].join('\n');
+          if (sysText) text = sysText + '\n\n' + text;
+          log.info('Cascade: rebuilt full history after resume send failure');
+        }
         await this.warmupCascade(true).catch(() => {});
         sessionState = getCascadeSessionState(getLsEntryByPort(this.port), this.apiKey);
         sessionId = sessionState?.sessionId || randomUUID();
