@@ -187,6 +187,37 @@ function getCacheSkipReason({ text = '', thinking = '', messages, useCascade, to
   return null;
 }
 
+function getTaskResetReplyReason({ text = '', thinking = '', trailingToolResult = false, lastHumanUserExcerpt = '' }) {
+  const cleanText = String(text || '').trim();
+  const cleanThinking = String(thinking || '').trim();
+  const cleanExcerpt = String(lastHumanUserExcerpt || '').trim();
+  if (!trailingToolResult) return null;
+  if (!cleanText || cleanThinking || !cleanExcerpt) return null;
+  if (cleanText.length > 1600) return null;
+
+  const normalized = cleanText.toLowerCase().replace(/\s+/g, ' ').trim();
+  const englishPatterns = [
+    /continuation of a previous (?:session|conversation)/,
+    /there(?:'s| is) no active task/,
+    /no active task for me to continue working on/,
+    /if you have a software engineering task/,
+    /please let me know what you'd like (?:to work on|help with)/,
+    /let me know what you need and i'll focus on/,
+    /is there something specific you'd like me to help with/,
+    /i'm ready to assist with whatever task you have in mind/,
+  ];
+  const chinesePatterns = [
+    /没有活动任务/,
+    /没有明确(?:的)?任务/,
+    /像是之前(?:会话|任务|上下文)的延续/,
+    /请告诉我(?:你)?想(?:做|处理|继续)什么/,
+    /如果你有(?:软件工程|开发)?任务/,
+  ];
+  if (englishPatterns.some(re => re.test(normalized))) return 'task_reset_handoff';
+  if (chinesePatterns.some(re => re.test(cleanText))) return 'task_reset_handoff';
+  return null;
+}
+
 function isOutputLimitError(err) {
   return /maximum output token limit|max output token/i.test(err?.message || '');
 }
@@ -672,7 +703,23 @@ export async function handleChatCompletions(body) {
     : null;
 
   if (stream) {
-    return streamResponse(chatId, created, displayModel, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, ckey, emulateTools, activeToolCallMode, toolPreamble);
+    return streamResponse(
+      chatId,
+      created,
+      displayModel,
+      modelKey,
+      messages,
+      cascadeMessages,
+      modelEnum,
+      modelUid,
+      useCascade,
+      ckey,
+      emulateTools,
+      activeToolCallMode,
+      toolPreamble,
+      trailingToolResult,
+      lastHumanUserExcerpt,
+    );
   }
 
   // ── Local response cache (exact body match) ─────────────
@@ -769,7 +816,25 @@ export async function handleChatCompletions(body) {
       reuseEnabled ? { reuseEntry, lsPort: ls.port, apiKey: acct.apiKey } : null,
       emulateTools, activeToolCallMode, toolPreamble,
     );
-    if (result.status === 200) return result;
+    if (result.status === 200) {
+      const nonStreamText = result.body?.choices?.[0]?.message?.content || '';
+      const nonStreamThinking = result.body?.choices?.[0]?.message?.reasoning_content || '';
+      const nonStreamToolCalls = result.body?.choices?.[0]?.message?.tool_calls?.length || 0;
+      const taskResetReason = attempt + 1 < maxAttempts
+        ? getTaskResetReplyReason({
+            text: nonStreamText,
+            thinking: nonStreamThinking,
+            trailingToolResult,
+            lastHumanUserExcerpt,
+          })
+        : null;
+      if (taskResetReason && nonStreamToolCalls === 0) {
+        cooldownAccountModel(acct.apiKey, modelKey, TRANSIENT_MODEL_COOLDOWN_MS, taskResetReason);
+        log.warn(`Account ${getAccountLogLabel(acct)} produced suspicious non-stream handoff text on ${displayModel}, trying next account`);
+        continue;
+      }
+      return result;
+    }
     reuseEntry = null; // don't try to reuse on the retry
     lastErr = result;
     const errType = result.body?.error?.type;
@@ -958,7 +1023,7 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
   }
 }
 
-function streamResponse(id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, ckey, emulateTools, activeToolCallMode, toolPreamble) {
+function streamResponse(id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, ckey, emulateTools, activeToolCallMode, toolPreamble, trailingToolResult, lastHumanUserExcerpt) {
   return {
     status: 200,
     stream: true,
@@ -1390,6 +1455,17 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
                   toolCalls: 0,
                 })
               : null;
+            const pendingTaskResetReason = !committedOutput
+              && attemptToolCalls.length === 0
+              && collectedToolCalls.length === 0
+              && attempt + 1 < maxAttempts
+              ? getTaskResetReplyReason({
+                  text: pendingText,
+                  thinking: pendingThinking,
+                  trailingToolResult,
+                  lastHumanUserExcerpt,
+                })
+              : null;
             if (pendingShortReason === 'short_for_long_context') {
               streamMetrics.retriesBeforeCommit++;
               cooldownAccountModel(currentApiKey, modelKey, TRANSIENT_MODEL_COOLDOWN_MS, 'short_tool_stop');
@@ -1398,6 +1474,18 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
                 pendingTextChars: pendingText.trim().length,
                 inputChars: _msgCharsStream,
                 cacheSkipReason: pendingShortReason,
+              });
+              continue;
+            }
+            if (pendingTaskResetReason === 'task_reset_handoff') {
+              streamMetrics.retriesBeforeCommit++;
+              cooldownAccountModel(currentApiKey, modelKey, TRANSIENT_MODEL_COOLDOWN_MS, pendingTaskResetReason);
+              slog.warn('Retrying suspicious task-reset handoff before visible output', {
+                attempt: attempt + 1,
+                pendingTextChars: pendingText.trim().length,
+                inputChars: _msgCharsStream,
+                reason: pendingTaskResetReason,
+                trailingToolResult,
               });
               continue;
             }
