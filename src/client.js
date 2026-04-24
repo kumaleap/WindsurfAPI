@@ -9,6 +9,7 @@
 import https from 'https';
 import { randomUUID } from 'crypto';
 import { log } from './config.js';
+import { extractImages } from './image.js';
 import { grpcFrame, grpcUnary, grpcStream } from './grpc.js';
 import { getLsEntryByPort } from './langserver.js';
 import {
@@ -51,6 +52,13 @@ function contentToString(content) {
 function renderCascadeHistoryTurn(role, content) {
   const safeRole = role === 'assistant' ? 'assistant' : 'user';
   return `<turn role="${safeRole}">\n${content}\n</turn>`;
+}
+
+async function extractUserTurnPayload(content) {
+  if (Array.isArray(content)) {
+    return extractImages(content);
+  }
+  return { text: contentToString(content), images: [] };
 }
 
 function getCascadeSessionState(lsEntry, apiKey, force = false) {
@@ -382,9 +390,12 @@ export class WindsurfClient {
       // emission contract there). This function just stitches system + u/a
       // turns into the single text payload Cascade accepts.
       let text;
+      let images = [];
       if (activeReuseEntry?.cascadeId) {
         const lastUser = [...messages].reverse().find(m => m.role === 'user');
-        text = lastUser ? contentToString(lastUser.content) : '';
+        const payload = await extractUserTurnPayload(lastUser?.content);
+        text = payload.text;
+        images = payload.images;
       } else {
         const systemMsgs = messages.filter(m => m.role === 'system');
         const convo = messages.filter(m => m.role === 'user' || m.role === 'assistant');
@@ -392,7 +403,13 @@ export class WindsurfClient {
 
         if (convo.length <= 1) {
           const last = convo[convo.length - 1];
-          text = last ? contentToString(last.content) : '';
+          if (last?.role === 'user') {
+            const payload = await extractUserTurnPayload(last.content);
+            text = payload.text;
+            images = payload.images;
+          } else {
+            text = last ? contentToString(last.content) : '';
+          }
         } else {
           const history = [];
           for (let i = 0; i < convo.length - 1; i++) {
@@ -400,7 +417,12 @@ export class WindsurfClient {
             history.push(renderCascadeHistoryTurn(m.role, contentToString(m.content)));
           }
           const latest = convo[convo.length - 1];
-          const latestText = latest ? contentToString(latest.content) : '';
+          let latestText = latest ? contentToString(latest.content) : '';
+          if (latest?.role === 'user') {
+            const payload = await extractUserTurnPayload(latest.content);
+            latestText = payload.text;
+            images = payload.images;
+          }
           text = [
             '<conversation_context>',
             'Use the wrapped turns below as prior context only. Do not repeat the wrapper tags or role attributes in your answer.',
@@ -418,7 +440,10 @@ export class WindsurfClient {
       // Step 2: Send message (retry once on panel-state-not-found)
       const sendMessage = async () => {
         if (!cascadeTiming.sendMessageAt) cascadeTiming.sendMessageAt = Date.now();
-        const sendProto = buildSendCascadeMessageRequest(this.apiKey, cascadeId, text, modelEnum, modelUid, sessionId, { toolPreamble });
+        const sendProto = buildSendCascadeMessageRequest(this.apiKey, cascadeId, text, modelEnum, modelUid, sessionId, {
+          toolPreamble,
+          images,
+        });
         await grpcUnary(
           this.port, this.csrfToken, `${LS_SERVICE}/SendUserCascadeMessage`, grpcFrame(sendProto)
         );

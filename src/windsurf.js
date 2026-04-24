@@ -298,8 +298,9 @@ export function buildStartCascadeRequest(apiKey, sessionId) {
  * Field 2: items (TextOrScopeItem { text = 1 })
  * Field 3: metadata
  * Field 5: cascade_config
+ * Field 6: images (repeated ImageData)
  */
-export function buildSendCascadeMessageRequest(apiKey, cascadeId, text, modelEnum, modelUid, sessionId, { toolPreamble } = {}) {
+export function buildSendCascadeMessageRequest(apiKey, cascadeId, text, modelEnum, modelUid, sessionId, { toolPreamble, images } = {}) {
   const parts = [];
 
   // Field 1: cascade_id
@@ -314,6 +315,16 @@ export function buildSendCascadeMessageRequest(apiKey, cascadeId, text, modelEnu
   // Field 5: cascade_config
   const cascadeConfig = buildCascadeConfig(modelEnum, modelUid, { toolPreamble });
   parts.push(writeMessageField(5, cascadeConfig));
+
+  if (images?.length) {
+    for (const image of images) {
+      const imageData = Buffer.concat([
+        writeStringField(1, image.base64_data),
+        writeStringField(2, image.mime_type || 'image/png'),
+      ]);
+      parts.push(writeMessageField(6, imageData));
+    }
+  }
 
   return Buffer.concat(parts);
 }
