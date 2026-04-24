@@ -574,12 +574,34 @@ export async function handleChatCompletions(body) {
     model: reqModel,
     stream = false,
     max_tokens,
+    response_format,
     tools,
     tool_choice,
   } = body;
   // `messages` is `let` not `const` so the identity-prompt injection below
   // can prepend a system turn for the legacy path too.
   let messages = body.messages;
+  const wantJson = response_format?.type === 'json_object' || response_format?.type === 'json_schema';
+  if (wantJson) {
+    let jsonHint = '\n\n[You MUST respond with valid JSON only. No markdown code fences, no explanation text, no prefix/suffix. Your entire response must be a single parseable JSON object.';
+    if (response_format?.type === 'json_schema' && response_format?.json_schema?.schema) {
+      jsonHint += ' Conform to this JSON Schema:\n' + JSON.stringify(response_format.json_schema.schema);
+    }
+    jsonHint += ']';
+    const sysJsonMsg = {
+      role: 'system',
+      content: 'Respond with valid JSON only. No markdown, no code fences, no explanation. Output must be parseable by JSON.parse().',
+    };
+    messages = [
+      sysJsonMsg,
+      ...(Array.isArray(messages) ? messages : []).map((m, i, arr) => {
+        if (i === arr.length - 1 && m?.role === 'user' && typeof m.content === 'string') {
+          return { ...m, content: m.content + jsonHint };
+        }
+        return m;
+      }),
+    ];
+  }
 
   const requestedModel = reqModel || config.defaultModel;
   const modelKey = resolveModel(requestedModel);
@@ -816,7 +838,7 @@ export async function handleChatCompletions(body) {
       client, chatId, created, displayModel, modelKey, messages, cascadeMessages, modelEnum, modelUid,
       useCascade, acct.apiKey, ckey,
       reuseEnabled ? { reuseEntry, lsPort: ls.port, apiKey: acct.apiKey } : null,
-      emulateTools, activeToolCallMode, toolPreamble,
+      emulateTools, activeToolCallMode, toolPreamble, wantJson,
     );
     if (result.status === 200) {
       const nonStreamText = result.body?.choices?.[0]?.message?.content || '';
@@ -874,7 +896,7 @@ export async function handleChatCompletions(body) {
   return lastErr || { status: 503, body: { error: { message: 'No active accounts available', type: 'pool_exhausted' } } };
 }
 
-async function nonStreamResponse(client, id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, apiKey, ckey, poolCtx, emulateTools, activeToolCallMode, toolPreamble) {
+async function nonStreamResponse(client, id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, apiKey, ckey, poolCtx, emulateTools, activeToolCallMode, toolPreamble, wantJson = false) {
   const startTime = Date.now();
   try {
     let allText = '';
@@ -931,6 +953,10 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
     // Scrub server-internal filesystem paths from everything we're about to
     // return. See src/sanitize.js for the patterns and rationale.
     allText = sanitizeText(allText);
+    if (wantJson && allText) {
+      const fenceMatch = allText.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+      if (fenceMatch) allText = fenceMatch[1].trim();
+    }
     allThinking = sanitizeText(allThinking);
     if (toolCalls.length) {
       toolCalls = toolCalls.map(tc => sanitizeToolCall(tc));
