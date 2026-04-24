@@ -312,8 +312,11 @@ export function buildSendCascadeMessageRequest(apiKey, cascadeId, text, modelEnu
   // Field 3: metadata
   parts.push(writeMessageField(3, buildMetadata(apiKey, undefined, sessionId)));
 
-  // Field 5: cascade_config
-  const cascadeConfig = buildCascadeConfig(modelEnum, modelUid, { toolPreamble });
+  // Pure vision requests need DEFAULT mode to activate the backend vision
+  // pipeline. When caller tools are present we must stay in NO_TOOL mode,
+  // otherwise Cascade's built-in tools conflict with our emulated ones.
+  const forceDefault = !!images?.length && !toolPreamble;
+  const cascadeConfig = buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault });
   parts.push(writeMessageField(5, cascadeConfig));
 
   if (images?.length) {
@@ -329,7 +332,7 @@ export function buildSendCascadeMessageRequest(apiKey, cascadeId, text, modelEnu
   return Buffer.concat(parts);
 }
 
-function buildCascadeConfig(modelEnum, modelUid, { toolPreamble } = {}) {
+function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault } = {}) {
   // CascadeConversationalPlannerConfig.planner_mode (field 4) uses
   // codeium_common.ConversationalPlannerMode:
   //   0 UNSPECIFIED  1 DEFAULT  2 READ_ONLY  3 NO_TOOL
@@ -353,7 +356,7 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble } = {}) {
   // put in the user message. The section override replaces that section
   // directly so the model sees our emulated tool definitions at the
   // system-prompt level.
-  const convParts = [writeVarintField(4, 3)]; // planner_mode = NO_TOOL
+  const convParts = [writeVarintField(4, forceDefault ? 1 : 3)];
 
   // ── System prompt section overrides ──────────────────────────────────
   //
