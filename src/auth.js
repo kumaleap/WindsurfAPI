@@ -86,6 +86,7 @@ let _saveInFlight = false;
 let _savePending = false;
 
 function serializeAccounts() {
+  const now = Date.now();
   return accounts.map(a => ({
     id: a.id, email: a.email, apiKey: a.apiKey,
     apiServerUrl: a.apiServerUrl, method: a.method,
@@ -103,6 +104,10 @@ function serializeAccounts() {
     userId: a.userId || '',
     teamId: a.teamId || '',
     planName: a.planName || '',
+    rateLimitedUntil: a.rateLimitedUntil || 0,
+    modelRateLimits: a._modelRateLimits
+      ? Object.fromEntries(Object.entries(a._modelRateLimits).filter(([, v]) => v > now))
+      : {},
     // From GetUserStatus — the authoritative tier/entitlement snapshot.
     userStatus: a.userStatus || null,
     userStatusLastFetched: a.userStatusLastFetched || 0,
@@ -165,6 +170,8 @@ function loadAccounts() {
         status: a.status || 'active',
         lastUsed: 0, errorCount: 0,
         refreshToken: a.refreshToken || '', expiresAt: 0, refreshTimer: null,
+        rateLimitedUntil: a.rateLimitedUntil || 0,
+        _modelRateLimits: a.modelRateLimits || {},
         addedAt: a.addedAt || Date.now(),
         tier: a.tier || 'unknown',
         tierManual: !!a.tierManual,
@@ -656,6 +663,7 @@ export function markRateLimited(apiKey, durationMs = 5 * 60 * 1000, modelKey = n
     account.rateLimitedUntil = Math.max(account.rateLimitedUntil || 0, until);
     log.warn(`Account ${getAccountLogLabel(account)} rate-limited (all models) for ${Math.round((account.rateLimitedUntil - now) / 60000)} min`);
   }
+  saveAccounts();
 }
 
 export function cooldownAccountModel(apiKey, modelKey, durationMs = 30 * 1000, reason = 'transient_upstream') {
@@ -734,6 +742,7 @@ export function reportInternalError(apiKey) {
   if (account.internalErrorStreak >= 2) {
     account.rateLimitedUntil = Date.now() + 5 * 60 * 1000;
     log.warn(`Account ${getAccountLogLabel(account)} quarantined 5min after ${account.internalErrorStreak} consecutive upstream internal errors`);
+    saveAccounts();
   }
 }
 
@@ -776,6 +785,11 @@ export function getAccountList() {
     const runtimeApiKey = getRuntimeApiKeyForAccount(a);
     const rpmLimit = rpmLimitFor(a);
     const rpmUsed = pruneRpmHistory(a, now);
+    const modelRateLimits = a._modelRateLimits ? Object.fromEntries(
+      Object.entries(a._modelRateLimits).filter(([, v]) => v > now)
+    ) : {};
+    const rateLimitedUntil = a.rateLimitedUntil || 0;
+    const isRateLimited = !!((rateLimitedUntil > now) || Object.keys(modelRateLimits).length);
     return {
       id: a.id,
       email: a.email,
@@ -791,11 +805,9 @@ export function getAccountList() {
       tier: a.tier || 'unknown',
       capabilities: a.capabilities || {},
       lastProbed: a.lastProbed || 0,
-      rateLimitedUntil: a.rateLimitedUntil || 0,
-      rateLimited: !!(a.rateLimitedUntil && a.rateLimitedUntil > now),
-      modelRateLimits: a._modelRateLimits ? Object.fromEntries(
-        Object.entries(a._modelRateLimits).filter(([, v]) => v > now)
-      ) : {},
+      rateLimitedUntil,
+      rateLimited: isRateLimited,
+      modelRateLimits,
       modelCooldowns: a._modelCooldowns ? Object.fromEntries(
         Object.entries(a._modelCooldowns)
           .filter(([, v]) => v?.until > now)
