@@ -581,6 +581,227 @@ tbody tr:hover td { background: var(--surface-2); }
 .ls-inst .ls-meta { color: var(--text-dim); font-family: var(--mono); font-size: 11px; margin-top: 2px; }
 
 /* ─── Model Chips ─────────────────────────────── */
+.accounts-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  padding: 12px;
+}
+.accounts-empty {
+  grid-column: 1 / -1;
+  padding: 36px 20px;
+  text-align: center;
+  color: var(--text-dim);
+  font-style: italic;
+}
+.account-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  box-shadow: var(--shadow);
+  transition: border-color .15s, transform .15s;
+}
+.account-card:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+.account-card.is-warning { border-color: rgba(245, 158, 11, .45); }
+.account-card.is-muted { opacity: .9; }
+.account-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.account-card-main {
+  min-width: 0;
+  flex: 1;
+}
+.account-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.section-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.inline-count-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+.account-card-meta > div {
+  display: inline-flex;
+  align-items: center;
+}
+.account-card-meta > div .text-xs {
+  display: none;
+}
+.account-id-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+.account-copy-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px dashed var(--border-strong);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-family: var(--mono);
+  cursor: pointer;
+  transition: all .15s;
+}
+.account-copy-chip:hover {
+  border-color: var(--accent);
+  color: var(--text);
+  background: var(--surface-2);
+}
+.account-card-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.account-card-actions .btn-ghost {
+  display: none;
+}
+.account-card-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.account-kpis {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.account-kpi {
+  min-width: 0;
+  padding: 8px 9px 7px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.account-kpi-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  margin-bottom: 6px;
+}
+.account-kpi-value {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+}
+.account-kpi-sub {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.account-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.account-stat {
+  min-width: 0;
+  padding: 7px 9px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.account-stat-wide {
+  grid-column: 1 / -1;
+}
+.account-stat-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  margin-bottom: 6px;
+}
+.account-stat-value {
+  min-height: 16px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  font-weight: 600;
+}
+.account-credit {
+  padding: 8px 9px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.account-detail-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.account-detail-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+}
+.account-detail-row span:first-child {
+  color: var(--text-dim);
+}
+.account-detail-row code {
+  word-break: break-all;
+}
+.account-action-list {
+  display: grid;
+  gap: 10px;
+}
+.account-action-item {
+  width: 100%;
+  justify-content: flex-start;
+  text-align: left;
+}
+.account-action-item.danger {
+  color: var(--error);
+  border-color: rgba(239, 68, 68, .3);
+}
+.account-action-item.danger:hover {
+  border-color: var(--error);
+  background: var(--error-soft);
+}
 .model-chips {
   display: flex;
   flex-wrap: wrap;
@@ -856,12 +1077,43 @@ tbody tr:hover td { background: var(--surface-2); }
 .break-all { word-break: break-all; }
 
 /* ─── Responsive ──────────────────────────────── */
+@media (max-width: 1700px) {
+  .accounts-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+@media (max-width: 1400px) {
+  .accounts-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 1100px) {
+  .accounts-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
 @media (max-width: 900px) {
   .sidebar { width: 60px; }
   .sidebar .brand-name, .sidebar .brand-sub, .sidebar nav a span, .sidebar .footer .ver, .sidebar .nav-group-label { display: none; }
   .sidebar .brand { justify-content: center; padding: 20px 0; }
   .sidebar nav a { justify-content: center; padding: 10px; }
   .main { margin-left: 60px; padding: 20px 16px; }
+  .accounts-grid {
+    grid-template-columns: 1fr;
+    padding: 12px;
+  }
+  .account-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .account-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 520px) {
+  .account-stats,
+  .account-kpis {
+    grid-template-columns: 1fr;
+  }
 }
 </style>
 <script type="module">
@@ -1163,14 +1415,38 @@ window._firebaseOAuth = async function(provider) {
       <div class="section-header">
         <div>
           <div class="section-title">添加账号</div>
-          <div class="section-desc">支持 API Key 或 Auth Token 两种方式</div>
+          <div class="section-desc">支持 API Key、官方 Auth Token，以及 auth1_/devin-session-token$ 串</div>
         </div>
       </div>
       <div class="section-body">
         <div style="padding:8px 12px;margin-bottom:12px;background:var(--surface-2);border-radius:var(--radius);font-size:12px;color:var(--text-muted);line-height:1.6">
           推荐用 Token 方式添加账号 点
           <a href="https://windsurf.com/show-auth-token" target="_blank" style="color:var(--accent);font-weight:600">windsurf.com/show-auth-token</a>
-          登录后复制 Token 粘贴到下面就行 所有登录方式（邮箱/Google/GitHub）都能用
+          登录后复制 Token 粘贴到下面就行 所有登录方式（邮箱/Google/GitHub）都能用。
+          如果你拿到的是卖家给的 auth 串，也可以直接粘贴 auth1_... 或 devin-session-token$...
+        </div>
+        <div style="margin-bottom:14px;padding:14px;border:1px solid rgba(99,102,241,.28);background:linear-gradient(180deg, rgba(99,102,241,.08), rgba(99,102,241,.03));border-radius:var(--radius)">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+            <div>
+              <div style="font-size:13px;font-weight:600">快速导入 auth 串</div>
+              <div class="text-sm text-muted">适合卖家只给 auth 串的场景，支持 auth1_...、devin-session-token$... 和官方 Auth Token。</div>
+            </div>
+            <span class="badge info no-dot">自动识别</span>
+          </div>
+          <div class="field">
+            <label class="field-label">Auth 串 / Token</label>
+            <textarea id="acc-auth-quick" class="textarea" rows="3" placeholder="直接粘贴 auth1_... / devin-session-token$... / Auth Token"></textarea>
+          </div>
+          <div class="field-row mt-3">
+            <div class="field" style="max-width:220px">
+              <label class="field-label">标签</label>
+              <input id="acc-auth-label" class="input" placeholder="可选">
+            </div>
+          </div>
+          <div class="field-row-actions">
+            <button class="btn btn-primary" onclick="App.quickImportAuth()">快速导入 auth 串</button>
+            <button class="btn btn-outline" onclick="App.fillQuickAuthToMain()">填入下方通用输入框</button>
+          </div>
         </div>
         <div class="field-row">
           <div class="field" style="max-width:180px">
@@ -1182,7 +1458,7 @@ window._firebaseOAuth = async function(provider) {
           </div>
           <div class="field" style="flex:2">
             <label class="field-label">Key / Token</label>
-            <input id="acc-key" class="input" placeholder="粘贴 Auth Token（从 windsurf.com/show-auth-token 获取）">
+            <input id="acc-key" class="input" placeholder="粘贴 Auth Token / auth1_... / devin-session-token$...">
           </div>
           <div class="field" style="max-width:200px">
             <label class="field-label">标签</label>
@@ -1205,12 +1481,7 @@ window._firebaseOAuth = async function(provider) {
         </div>
       </div>
       <div class="section-body tight">
-        <div class="table-wrap">
-          <table id="accounts-table">
-            <thead><tr><th>ID</th><th>标签</th><th>层级</th><th>RPM</th><th>余额</th><th>可用模型</th><th>状态</th><th>错误</th><th>最后使用</th><th>Key</th><th>操作</th></tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
+        <div id="accounts-grid" class="accounts-grid"></div>
       </div>
     </div>
   </section>
@@ -1578,6 +1849,7 @@ const App = {
   allModels: [],
   modelAccessConfig: { mode: 'all', list: [] },
   proxyConfig: { global: null, perAccount: {} },
+  accountsCache: [],
   loginHistory: JSON.parse(localStorage.getItem('wl_history') || '[]'),
   _filterTimer: null,
 
@@ -2238,6 +2510,8 @@ const App = {
       this.api('GET', '/accounts'),
       this.api('GET', '/overview').catch(() => null),
     ]);
+    const accounts = d.accounts || [];
+    this.accountsCache = accounts;
     const instances = ov?.langServer?.instances || [];
     const poolCard = document.getElementById('ls-pool-card');
     if (poolCard) {
@@ -2269,11 +2543,24 @@ const App = {
         poolCard.innerHTML = '';
       }
     }
-    const tbody = document.querySelector('#accounts-table tbody');
+    const grid = document.getElementById('accounts-grid');
+    if (!grid) return;
+    const activeCount = accounts.filter(a => a.status === 'active').length;
+    const sectionTitle = grid.closest('.section')?.querySelector('.section-title');
+    if (sectionTitle) {
+      sectionTitle.parentElement?.classList.add('section-title-row');
+      let badge = sectionTitle.parentElement?.querySelector('#accounts-active-count');
+      if (!badge && sectionTitle.parentElement) {
+        badge = document.createElement('span');
+        badge.id = 'accounts-active-count';
+        badge.className = 'inline-count-badge';
+        sectionTitle.parentElement.appendChild(badge);
+      }
+      if (badge) badge.textContent = `active ${activeCount}`;
+    }
     const tierLabel = { pro: 'PRO', free: 'FREE', expired: '已过期', unknown: '未知' };
-    tbody.innerHTML = (d.accounts || []).map(a => {
+    grid.innerHTML = accounts.map(a => {
       const tier = a.tier || 'unknown';
-      // GetUserStatus snapshot — authoritative plan/trial/credit info (may be null)
       const us = a.userStatus || null;
       const usTipLines = [];
       let tierSubline = '';
@@ -2303,19 +2590,18 @@ const App = {
       const tierTooltip = usTipLines.length
         ? usTipLines.join('\n')
         : '点击手动修改层级（探测异常时用）';
-
-      // Compact summary: avail/total + 编辑 button. Clicking opens modal.
       const tierModels = a.tierModels || [];
       const blockedCount = (a.blockedModels || []).length;
       const availCount = tierModels.length - blockedCount;
+      const accountId = this.escJsSingle(a.id);
       const capsHtml = tierModels.length
-        ? `<button class="btn btn-ghost btn-xs" style="min-width:96px" onclick="App.openBlockedModal('${a.id}')" title="编辑该账号可用模型">
+        ? `<button class="btn btn-ghost btn-xs" style="min-width:96px" onclick="App.openBlockedModal('${accountId}')" title="编辑该账号可用模型">
              <span style="color:var(--success,#10b981);font-weight:600">${availCount}</span>
              <span style="color:var(--text-dim)">/${tierModels.length}</span>
              ${blockedCount > 0 ? `<span class="badge warn" style="margin-left:4px">-${blockedCount}</span>` : ''}
            </button>`
         : `<span class="text-xs text-dim">-</span>`;
-      const rateLimitBadge = a.rateLimited ? ` <span class="badge warn">限流中</span>` : '';
+      const rateLimitBadge = a.rateLimited ? '<span class="badge warn">限流中</span>' : '';
       const rpmUsed = a.rpmUsed ?? 0;
       const rpmLimit = a.rpmLimit ?? 0;
       const rpmPct = rpmLimit > 0 ? Math.min(100, Math.round((rpmUsed / rpmLimit) * 100)) : 0;
@@ -2330,9 +2616,6 @@ const App = {
             </div>
            </div>`
         : `<span class="text-xs text-dim">-</span>`;
-
-      // Credit / quota cell — collapses the legacy credit contract and the
-      // newer daily/weekly percent contract into a single progress bar.
       const cr = a.credits || null;
       let creditCell;
       if (!cr) {
@@ -2346,59 +2629,178 @@ const App = {
           : pct <= 10 ? 'var(--error)'
           : pct <= 30 ? 'var(--warn, #f59e0b)'
           : 'var(--success, #10b981)';
-        const planName = cr.planName || '-';
+        const planName = cr.planName || a.planName || '-';
         const fetchedAgo = cr.fetchedAt ? Math.round((Date.now() - cr.fetchedAt) / 60000) + 'm ago' : '-';
+        const planEnd = cr.planEnd ? new Date(cr.planEnd) : null;
+        const planEndText = planEnd && !Number.isNaN(planEnd.getTime())
+          ? planEnd.toLocaleDateString()
+          : '';
+        let expiryText = '';
+        let expiryColor = 'var(--text-dim)';
+        if (planEndText) {
+          const startOfDay = (dt) => new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime();
+          const diffDays = Math.round((startOfDay(planEnd) - startOfDay(new Date())) / 86400000);
+          if (diffDays < 0) {
+            expiryText = '已过期';
+            expiryColor = 'var(--error)';
+          } else if (diffDays === 0) {
+            expiryText = '今天到期';
+            expiryColor = 'var(--error)';
+          } else if (diffDays <= 3) {
+            expiryText = `剩余 ${diffDays} 天`;
+            expiryColor = 'var(--error)';
+          } else if (diffDays <= 10) {
+            expiryText = `剩余 ${diffDays} 天`;
+            expiryColor = 'var(--warn, #f59e0b)';
+          } else {
+            expiryText = `剩余 ${diffDays} 天`;
+            expiryColor = 'var(--success, #10b981)';
+          }
+        }
+        const dailyText = cr.dailyPercent != null ? `日 ${cr.dailyPercent.toFixed(0)}%` : '';
+        const weeklyText = cr.weeklyPercent != null ? `周 ${cr.weeklyPercent.toFixed(0)}%` : '';
+        const promptText = cr.prompt?.limit ? `P ${Math.max(0, (cr.prompt.limit || 0) - (cr.prompt.used || 0)).toFixed(0)}/${cr.prompt.limit.toFixed(0)}` : '';
+        const flexText = cr.flex?.limit ? `F ${Math.max(0, (cr.flex.limit || 0) - (cr.flex.used || 0)).toFixed(0)}/${cr.flex.limit.toFixed(0)}` : '';
         const tipLines = [
           `Plan: ${planName}`,
+          expiryText ? `Remaining: ${expiryText}` : '',
           cr.dailyPercent != null ? `Daily:  ${cr.dailyPercent.toFixed(1)}% left` : '',
           cr.weeklyPercent != null ? `Weekly: ${cr.weeklyPercent.toFixed(1)}% left` : '',
           cr.prompt?.limit ? `Prompt: ${(cr.prompt.used || 0).toFixed(0)}/${cr.prompt.limit.toFixed(0)}` : '',
           cr.flex?.limit ? `Flex:   ${(cr.flex.used || 0).toFixed(0)}/${cr.flex.limit.toFixed(0)}` : '',
+          planEndText ? `Expires: ${planEndText}` : '',
           cr.dailyResetAt ? `Daily reset: ${new Date(cr.dailyResetAt * 1000).toLocaleString()}` : '',
           `Updated: ${fetchedAgo}`,
           cr.lastError ? `Last error: ${cr.lastError}` : '',
         ].filter(Boolean).join('\n');
-        creditCell = `<div style="min-width:100px" title="${this.esc(tipLines)}">
-            <div class="text-xs" style="display:flex;justify-content:space-between;margin-bottom:2px">
-              <span>${this.esc(planName.slice(0, 10))}</span><span style="color:${pctColor}">${pctStr}</span>
-            </div>
-            <div style="height:4px;background:var(--surface-3);border-radius:2px;overflow:hidden">
+        creditCell = `<div title="${this.esc(tipLines)}">
+            <div style="height:6px;background:var(--surface-3);border-radius:999px;overflow:hidden">
               <div style="height:100%;width:${pct != null ? pct : 0}%;background:${pctColor};transition:width .3s"></div>
             </div>
+            ${(dailyText || weeklyText) ? `<div class="text-xs text-dim" style="margin-top:2px">${this.esc([dailyText, weeklyText].filter(Boolean).join(' · '))}</div>` : ''}
+            ${(promptText || flexText) ? `<div class="text-xs text-dim" style="margin-top:2px">${this.esc([promptText, flexText].filter(Boolean).join(' · '))}</div>` : ''}
           </div>`;
       }
+      const quotaPctValue = cr?.percent != null ? `${Math.max(0, Math.min(100, cr.percent)).toFixed(0)}%` : '-';
+      const quotaPctColor = cr?.percent == null
+        ? 'var(--text-dim)'
+        : cr.percent <= 10 ? 'var(--error)'
+        : cr.percent <= 30 ? 'var(--warn, #f59e0b)'
+        : 'var(--success, #10b981)';
+      const quotaPlanText = cr?.planName || a.planName || '-';
+      const planEndDate = cr?.planEnd ? new Date(cr.planEnd) : null;
+      const hasPlanEnd = !!(planEndDate && !Number.isNaN(planEndDate.getTime()));
+      const expireDiffDays = hasPlanEnd
+        ? Math.round((
+          new Date(planEndDate.getFullYear(), planEndDate.getMonth(), planEndDate.getDate()).getTime()
+          - new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()).getTime()
+        ) / 86400000)
+        : null;
+      const expireValue = expireDiffDays == null ? '-' : `${Math.max(0, expireDiffDays)}d`;
+      const expireColor = expireDiffDays == null
+        ? 'var(--text-dim)'
+        : expireDiffDays <= 3 ? 'var(--error)'
+        : expireDiffDays <= 10 ? 'var(--warn, #f59e0b)'
+        : 'var(--success, #10b981)';
+      const expireSub = hasPlanEnd ? planEndDate.toLocaleDateString() : 'No expiry';
+      const capsCompact = tierModels.length
+        ? `<span><span style="color:var(--success,#10b981)">${availCount}</span><span style="color:var(--text-dim)">/${tierModels.length}</span></span>`
+        : `<span class="text-xs text-dim">-</span>`;
+      const rpmCompact = rpmLimit > 0
+        ? `<div title="${rpmUsed}/${rpmLimit}"><div>${rpmUsed}/${rpmLimit}</div><div class="text-xs" style="color:${rpmColor}">${rpmPct}%</div></div>`
+        : `<span class="text-xs text-dim">-</span>`;
+      const statusBadges = `
+        <span class="badge ${a.status}">${this.esc(a.status)}</span>
+        ${rateLimitBadge}
+      `;
+      const keyHtml = a.keyPrefix
+        ? `<button class="account-copy-chip" onclick="App.copyKey('${this.escJsSingle(a.apiKey || '')}')" title="点击复制 API Key">${this.esc(a.keyPrefix)}</button>`
+        : '<span class="text-xs text-dim">等待获取 API Key</span>';
+      const providerHtml = a.authProvider
+        ? `<span class="badge info no-dot">${this.esc(String(a.authProvider).toUpperCase())}</span>`
+        : '';
+      const lastUsedText = a.lastUsed ? new Date(a.lastUsed).toLocaleString() : '未使用';
+      const cardClass = [
+        'account-card',
+        a.rateLimited ? 'is-warning' : '',
+        a.status !== 'active' ? 'is-muted' : '',
+      ].filter(Boolean).join(' ');
+      const tierHtml = `
+        <div style="display:flex;flex-direction:column;gap:2px">
+          <span class="tier ${tier}" style="cursor:pointer" title="${this.esc(tierTooltip)}" onclick="App.overrideTier('${accountId}','${this.escJsSingle(tier)}')">${tierLabel[tier] || tier}${a.tierManual ? ' ✎' : ''}</span>
+          ${tierSubline ? `<span class="text-xs text-dim" style="font-size:10px">${this.esc(tierSubline)}</span>` : ''}
+        </div>`;
       return `
-      <tr>
-        <td><code>${a.id}</code></td>
-        <td>${this.esc(a.email)}</td>
-        <td>
-          <div style="display:flex;flex-direction:column;gap:2px">
-            <span class="tier ${tier}" style="cursor:pointer" title="${this.esc(tierTooltip)}" onclick="App.overrideTier('${a.id}','${tier}')">${tierLabel[tier] || tier}${a.tierManual ? ' ✎' : ''}</span>
-            ${tierSubline ? `<span class="text-xs text-dim" style="font-size:10px">${this.esc(tierSubline)}</span>` : ''}
+      <div class="${cardClass}">
+        <div class="account-card-top">
+          <div class="account-card-main">
+            <div class="account-card-meta">
+              ${statusBadges}
+              ${tierHtml}
+            </div>
           </div>
-        </td>
-        <td>${rpmCell}</td>
-        <td>${creditCell}</td>
-        <td>${capsHtml}</td>
-        <td><span class="badge ${a.status}">${a.status}</span>${rateLimitBadge}</td>
-        <td style="color:${a.errorCount > 0 ? 'var(--error)' : 'inherit'}">${a.errorCount}</td>
-        <td class="text-sm nowrap">${a.lastUsed ? new Date(a.lastUsed).toLocaleString() : '-'}</td>
-        <td class="nowrap">
-          <code style="cursor:pointer" title="点击复制" onclick="App.copyKey('${this.escJsSingle(a.apiKey)}')">${a.keyPrefix}</code>
-        </td>
-        <td class="nowrap">
-          <div class="btn-group">
-            <button class="btn btn-ghost btn-xs" onclick="App.probeAccount('${a.id}')" title="探测能力">探测</button>
-            <button class="btn btn-ghost btn-xs" onclick="App.refreshCredits('${a.id}')" title="刷新余额">余额</button>
-            ${a.status === 'active'
-              ? `<button class="btn btn-ghost btn-xs" onclick="App.toggleAccount('${a.id}','disabled')">停用</button>`
-              : `<button class="btn btn-success btn-xs" onclick="App.toggleAccount('${a.id}','active')">启用</button>`}
-            <button class="btn btn-ghost btn-xs" onclick="App.resetErrors('${a.id}')">重置</button>
-            <button class="btn btn-ghost btn-xs" style="color:var(--error)" onclick="App.deleteAccount('${a.id}')">删除</button>
+          <div class="account-card-actions">
+            <button class="btn btn-ghost btn-xs" onclick="App.probeAccount('${accountId}')" title="探测能力">探测</button>
+            <button class="btn btn-ghost btn-xs" onclick="App.refreshCredits('${accountId}')" title="刷新额度">额度</button>
+            <button class="btn btn-outline btn-xs" onclick="App.openAccountActions('${accountId}')" title="更多操作">更多</button>
           </div>
-        </td>
-      </tr>`;
-    }).join('') || '<tr class="empty-row"><td colspan="11">暂无账号，请先添加</td></tr>';
+        </div>
+        <div class="account-kpis">
+          <div class="account-kpi">
+            <div class="account-kpi-label">Quota</div>
+            <div class="account-kpi-value" style="color:${quotaPctColor}">${this.esc(quotaPctValue)}</div>
+            <div class="account-kpi-sub">${this.esc(quotaPlanText)}</div>
+          </div>
+          <div class="account-kpi">
+            <div class="account-kpi-label">Expire</div>
+            <div class="account-kpi-value" style="color:${expireColor}">${this.esc(expireValue)}</div>
+            <div class="account-kpi-sub">${this.esc(expireSub)}</div>
+          </div>
+        </div>
+        <div class="account-stats">
+          <div class="account-stat">
+            <div class="account-stat-label">Errors</div>
+            <div class="account-stat-value" style="color:${a.errorCount > 0 ? 'var(--error)' : 'inherit'}">${a.errorCount}</div>
+          </div>
+          <div class="account-stat">
+            <div class="account-stat-label">RPM</div>
+            <div class="account-stat-value">${rpmCompact}</div>
+          </div>
+          <div class="account-stat">
+            <div class="account-stat-label">Models</div>
+            <div class="account-stat-value">${capsCompact}</div>
+          </div>
+        </div>
+        <div class="account-credit">
+          <div class="account-stat-label">Usage</div>
+          ${creditCell}
+        </div>
+      </div>`;
+    }).join('') || '<div class="accounts-empty">暂无账号，请先添加</div>';
+  },
+
+  accountHasDisplayData(account) {
+    if (!account) return false;
+    if (account.userStatus) return true;
+    const credits = account.credits || null;
+    if (!credits) return false;
+    return credits.percent != null
+      || !!credits.planName
+      || !!credits.planEnd
+      || !!credits.prompt?.limit
+      || !!credits.flex?.limit
+      || !!credits.lastError;
+  },
+
+  async refreshAccountCardsUntilReady(accountId, tries = 4, delayMs = 1500) {
+    await this.loadAccounts();
+    if (!accountId) return;
+    for (let i = 0; i < tries; i += 1) {
+      const account = (this.accountsCache || []).find(a => a.id === accountId);
+      if (this.accountHasDisplayData(account)) return;
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+      await this.loadAccounts();
+    }
   },
 
   async refreshCredits(id) {
@@ -2455,6 +2857,61 @@ const App = {
         this.toast(r.error || '探测失败', 'error');
       }
     } catch (e) { this.toast('探测失败: ' + e.message, 'error'); }
+  },
+
+  openAccountActions(id) {
+    const acct = (this.accountsCache || []).find(a => a.id === id);
+    if (!acct) return this.toast('账号不存在', 'error');
+    const toggleLabel = acct.status === 'active' ? '停用账号' : '启用账号';
+    const planText = acct.credits?.planName || acct.planName || acct.userStatus?.planName || '-';
+    const lastUsedText = acct.lastUsed ? new Date(acct.lastUsed).toLocaleString() : '未使用';
+    const html = `
+      <div class="account-detail-list">
+        <div class="account-detail-row"><span>Email</span><code>${this.esc(acct.email || '-')}</code></div>
+        <div class="account-detail-row"><span>ID</span><code>${this.esc(acct.id)}</code></div>
+        <div class="account-detail-row"><span>Provider</span><span>${this.esc(acct.authProvider || acct.method || '-')}</span></div>
+        <div class="account-detail-row"><span>Plan</span><span>${this.esc(planText)}</span></div>
+        <div class="account-detail-row"><span>Last Used</span><span>${this.esc(lastUsedText)}</span></div>
+        <div class="account-detail-row"><span>Errors</span><span>${this.esc(String(acct.errorCount || 0))}</span></div>
+      </div>
+      <div class="account-action-list">
+        <button class="btn btn-outline account-action-item" data-action="probe">Probe</button>
+        <button class="btn btn-outline account-action-item" data-action="quota">Quota</button>
+        <button class="btn btn-outline account-action-item" data-action="toggle">${toggleLabel}</button>
+        <button class="btn btn-outline account-action-item" data-action="models">编辑可用模型</button>
+        <button class="btn btn-outline account-action-item" data-action="tier">手动设置层级</button>
+        <button class="btn btn-outline account-action-item" data-action="copy" ${acct.apiKey ? '' : 'disabled'}>复制 API Key</button>
+        <button class="btn btn-outline account-action-item" data-action="reset">重置错误计数</button>
+        <button class="btn btn-outline account-action-item danger" data-action="delete">删除账号</button>
+      </div>`;
+    this.confirm(`更多操作 · ${acct.email || acct.id}`, html, { html: true, okText: '关闭' });
+    setTimeout(() => this._bindAccountActionsModal(id), 0);
+  },
+
+  _bindAccountActionsModal(accountId) {
+    const root = document.querySelector('.modal-overlay:last-child');
+    if (!root) return;
+    const cancelBtn = root.querySelector('[data-act=cancel]');
+    if (cancelBtn) cancelBtn.style.display = 'none';
+    root.querySelectorAll('[data-action]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const action = btn.dataset.action;
+        const acct = (this.accountsCache || []).find(a => a.id === accountId);
+        root.remove();
+        if (!acct) return this.toast('账号不存在', 'error');
+        if (action === 'probe') return this.probeAccount(accountId);
+        if (action === 'quota') return this.refreshCredits(accountId);
+        if (action === 'toggle') return this.toggleAccount(accountId, acct.status === 'active' ? 'disabled' : 'active');
+        if (action === 'models') return this.openBlockedModal(accountId);
+        if (action === 'tier') return this.overrideTier(accountId, acct.tier || 'unknown');
+        if (action === 'copy') {
+          if (!acct.apiKey) return this.toast('该账号暂未获取 API Key', 'error');
+          return this.copyKey(acct.apiKey);
+        }
+        if (action === 'reset') return this.resetErrors(accountId);
+        if (action === 'delete') return this.deleteAccount(accountId);
+      });
+    });
   },
 
   async openBlockedModal(id) {
@@ -2611,8 +3068,97 @@ const App = {
     if (!key) return this.toast('请输入 Key 或 Token', 'error');
     const body = type === 'api_key' ? { api_key: key, label } : { token: key, label };
     const r = await this.api('POST', '/accounts', body);
+    if (r.success) {
+      document.getElementById('acc-key').value = '';
+      document.getElementById('acc-label').value = '';
+      await this.refreshAccountCardsUntilReady(r.account?.id || null);
+      return;
+    }
     if (r.success) { this.toast('账号已添加'); document.getElementById('acc-key').value = ''; document.getElementById('acc-label').value = ''; this.loadAccounts(); }
     else this.toast(r.error || '添加失败', 'error');
+  },
+
+  fillQuickAuthToMain() {
+    const raw = document.getElementById('acc-auth-quick')?.value.trim() || '';
+    const label = document.getElementById('acc-auth-label')?.value.trim() || '';
+    if (!raw) return this.toast('请先粘贴 auth 串', 'error');
+    document.getElementById('acc-type').value = 'token';
+    document.getElementById('acc-key').value = raw;
+    document.getElementById('acc-label').value = label;
+    document.getElementById('acc-key').focus();
+    this.toast('已填入下方输入框');
+  },
+
+  async quickImportAuth() {
+    const token = document.getElementById('acc-auth-quick')?.value.trim() || '';
+    const label = document.getElementById('acc-auth-label')?.value.trim() || '';
+    if (!token) return this.toast('请先粘贴 auth 串或 Token', 'error');
+    const lines = token.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+    if (lines.length > 1) {
+      this.toast(`姝ｅ湪鎵归噺瀵煎叆 ${lines.length} 涓处鍙?..`, 'info');
+      const entries = lines.map((line, idx) => ({
+        token: line,
+        label: label ? `${label}-${idx + 1}` : '',
+      }));
+      const r = await this.api('POST', '/accounts/batch', { entries });
+      if (!r.success) return this.toast(r.error || '鎵归噺瀵煎叆澶辫触', 'error');
+      document.getElementById('acc-auth-quick').value = '';
+      document.getElementById('acc-auth-label').value = '';
+      await this.loadAccounts();
+      const summary = `鎵归噺瀵煎叆瀹屾垚锛屾垚鍔?${r.successCount || 0} / 澶辫触 ${r.failCount || 0}`;
+      return this.toast(summary, (r.failCount || 0) > 0 ? 'error' : 'success');
+    }
+    const r = await this.api('POST', '/accounts', { token, label });
+    if (r.success) {
+      document.getElementById('acc-auth-quick').value = '';
+      document.getElementById('acc-auth-label').value = '';
+      await this.refreshAccountCardsUntilReady(r.account?.id || null);
+      return;
+    }
+    if (r.success) {
+      this.toast('账号已导入');
+      document.getElementById('acc-auth-quick').value = '';
+      document.getElementById('acc-auth-label').value = '';
+      this.loadAccounts();
+    } else {
+      this.toast(r.error || '导入失败', 'error');
+    }
+  },
+
+  async quickImportAuth() {
+    const token = document.getElementById('acc-auth-quick')?.value.trim() || '';
+    const label = document.getElementById('acc-auth-label')?.value.trim() || '';
+    if (!token) return this.toast('请先粘贴 auth 串或 Token', 'error');
+    const lines = token.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+    if (lines.length > 1) {
+      this.toast(`正在批量导入 ${lines.length} 个账号...`, 'info');
+      const entries = lines.map((line, idx) => ({
+        token: line,
+        label: label ? `${label}-${idx + 1}` : '',
+      }));
+      const r = await this.api('POST', '/accounts/batch', { entries });
+      if (!r.success) return this.toast(r.error || '批量导入失败', 'error');
+      document.getElementById('acc-auth-quick').value = '';
+      document.getElementById('acc-auth-label').value = '';
+      await this.loadAccounts();
+      const summary = `批量导入完成，成功 ${r.successCount || 0} / 失败 ${r.failCount || 0}`;
+      return this.toast(summary, (r.failCount || 0) > 0 ? 'error' : 'success');
+    }
+    const r = await this.api('POST', '/accounts', { token, label });
+    if (r.success) {
+      document.getElementById('acc-auth-quick').value = '';
+      document.getElementById('acc-auth-label').value = '';
+      await this.refreshAccountCardsUntilReady(r.account?.id || null);
+      return;
+    }
+    if (r.success) {
+      this.toast('账号已导入');
+      document.getElementById('acc-auth-quick').value = '';
+      document.getElementById('acc-auth-label').value = '';
+      this.loadAccounts();
+    } else {
+      this.toast(r.error || '导入失败', 'error');
+    }
   },
 
   async toggleAccount(id, status) { await this.api('PATCH', `/accounts/${id}`, { status }); this.loadAccounts(); },

@@ -783,7 +783,7 @@ export async function handleChatCompletions(body) {
     if (isExperimentalEnabled('preflightRateLimit')) {
       try {
         const px = getEffectiveProxy(acct.id) || null;
-        const rl = await checkMessageRateLimit(acct.apiKey, px);
+        const rl = await checkMessageRateLimit(acct.runtimeApiKey || acct.apiKey, px);
         if (!rl.hasCapacity) {
           log.warn(`Preflight: ${getAccountLogLabel(acct)} has no capacity (remaining=${rl.messagesRemaining}), skipping`);
           markRateLimited(acct.apiKey, 5 * 60 * 1000, modelKey);
@@ -809,7 +809,7 @@ export async function handleChatCompletions(body) {
       return n + (typeof c === 'string' ? c.length : Array.isArray(c) ? c.reduce((k, p) => k + (typeof p?.text === 'string' ? p.text.length : 0), 0) : 0);
     }, 0);
     log.info(`Chat: model=${displayModel} flow=${useCascade ? 'cascade' : 'legacy'} attempt=${attempt + 1} account=${getAccountLogLabel(acct)} ls=${ls.port} turns=${(messages||[]).length} chars=${_msgChars}${reuseEntry ? ' reuse=1' : ''}${emulateTools ? ' tools=emu' : ''}`);
-    const client = new WindsurfClient(acct.apiKey, ls.port, ls.csrfToken);
+    const client = new WindsurfClient(acct.runtimeApiKey || acct.apiKey, ls.port, ls.csrfToken);
     const result = await nonStreamResponse(
       client, chatId, created, displayModel, modelKey, messages, cascadeMessages, modelEnum, modelUid,
       useCascade, acct.apiKey, ckey,
@@ -1371,7 +1371,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
           if (isExperimentalEnabled('preflightRateLimit')) {
             try {
               const px = getEffectiveProxy(acct.id) || null;
-              const rl = await checkMessageRateLimit(acct.apiKey, px);
+              const rl = await checkMessageRateLimit(acct.runtimeApiKey || acct.apiKey, px);
               if (!rl.hasCapacity) {
                 log.warn(`Preflight: ${getAccountLogLabel(acct)} has no capacity (remaining=${rl.messagesRemaining}), skipping`);
                 markRateLimited(acct.apiKey, 5 * 60 * 1000, modelKey);
@@ -1391,7 +1391,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
           }
           const _msgCharsStream = estimateMessageChars(messages);
           log.info(`Chat: model=${model} flow=${useCascade ? 'cascade' : 'legacy'} stream=true attempt=${attempt + 1} account=${getAccountLogLabel(acct)} ls=${ls.port} turns=${(messages||[]).length} chars=${_msgCharsStream}${reuseEntry ? ' reuse=1' : ''}`);
-          const client = new WindsurfClient(acct.apiKey, ls.port, ls.csrfToken);
+          const client = new WindsurfClient(acct.runtimeApiKey || acct.apiKey, ls.port, ls.csrfToken);
           let cascadeResult = null;
 
           try {
