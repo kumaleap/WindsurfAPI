@@ -334,12 +334,42 @@ function isRetryableUpstreamMessage(message = '') {
   return /(bad gateway|502|read econnreset|econnreset|socket hang up|panel state missing|retryable error from model provider|third-party model provider is experiencing issues|currently not available|temporarily unavailable|request timeout|upstream disconnected|fetch failed|timeout)/i.test(message);
 }
 
+function parseRetryAfterMsFromMessage(message = '') {
+  if (!message) return 0;
+  const resetMatch = message.match(/resets?\s+in:\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?/i);
+  if (resetMatch) {
+    const hours = parseInt(resetMatch[1] || '0', 10);
+    const minutes = parseInt(resetMatch[2] || '0', 10);
+    const seconds = parseInt(resetMatch[3] || '0', 10);
+    const totalMs = (((hours * 60) + minutes) * 60 + seconds) * 1000;
+    if (totalMs > 0) return totalMs;
+  }
+  const retryMatch = message.match(/retry[_\s-]*after[:\s]+(\d+)\s*(ms|milliseconds?|s|sec|secs|seconds?|m|min|mins|minutes?|h|hr|hrs|hours?)/i);
+  if (!retryMatch) return 0;
+  const amount = parseInt(retryMatch[1] || '0', 10);
+  const unit = String(retryMatch[2] || '').toLowerCase();
+  if (!amount) return 0;
+  if (unit.startsWith('ms')) return amount;
+  if (unit.startsWith('s')) return amount * 1000;
+  if (unit.startsWith('m')) return amount * 60 * 1000;
+  return amount * 60 * 60 * 1000;
+}
+
+function getRetryAfterMs(source, fallbackMs = 0) {
+  const direct = Number(source?.retryAfterMs || source?.retry_after_ms || 0);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  const fromMessage = parseRetryAfterMsFromMessage(source?.message || '');
+  if (fromMessage > 0) return fromMessage;
+  return fallbackMs;
+}
+
 function inspectFailure(err) {
   const message = err?.message || '';
   return {
     message,
     isAuthFail: /unauthenticated|invalid api key|invalid_grant|permission_denied.*account/i.test(message),
     isRateLimit: /rate limit|rate_limit|too many requests|quota/i.test(message) || !!err?.isRateLimit,
+    retryAfterMs: getRetryAfterMs(err),
     isInternal: /(internal error occurred.*error id)/i.test(message),
     isPermanentModel: isPermanentModelPermissionMessage(message),
     isRetryableUpstream: isRetryableUpstreamMessage(message),
@@ -351,7 +381,8 @@ function applyFailurePolicy(apiKey, modelKey, err, { cooldownTransient = true } 
   const failure = inspectFailure(err);
   if (failure.isAuthFail) reportError(apiKey);
   if (failure.isRateLimit) {
-    markRateLimited(apiKey, 5 * 60 * 1000, modelKey);
+    err.retryAfterMs = failure.retryAfterMs || 5 * 60 * 1000;
+    markRateLimited(apiKey, err.retryAfterMs, modelKey);
     err.isRateLimit = true;
     err.isModelError = true;
   }
@@ -999,9 +1030,10 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
     // Rate limits → 429 with Retry-After; model errors → 403; others → 502
     if (failure.isRateLimit) {
       const rl = isAllRateLimited(modelKey);
+      const retryAfterMs = Math.max(failure.retryAfterMs || 0, rl.retryAfterMs || 0, 60_000);
       return {
         status: 429,
-        body: { error: { message: `${model} 已达速率限制，请稍后重试`, type: 'rate_limit_exceeded', retry_after_ms: rl.retryAfterMs || 60000 } },
+        body: { error: { message: `${model} 已达速率限制，请稍后重试`, type: 'rate_limit_exceeded', retry_after_ms: retryAfterMs } },
       };
     }
     // LS crash on oversized payload — gRPC surfaces this as "pending stream
@@ -1608,8 +1640,11 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
             });
           } else {
             const rl = isAllRateLimited(modelKey);
+            const retryAfterMs = Math.max(rl.retryAfterMs || 0, getRetryAfterMs(lastErr) || 0, 60_000);
             const errType = rl.allLimited
               ? 'rate_limit_exceeded'
+              : lastErr?.isRateLimit
+                ? 'rate_limit_exceeded'
               : lastErr?.isModelError
                 ? 'model_not_available'
                 : 'upstream_error';
@@ -1620,7 +1655,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
               error: {
                 message: errMsg,
                 type: errType,
-                ...(rl.allLimited ? { retry_after_ms: rl.retryAfterMs } : {}),
+                ...((rl.allLimited || errType === 'rate_limit_exceeded') ? { retry_after_ms: retryAfterMs } : {}),
               },
             });
             res.write('data: [DONE]\n\n');

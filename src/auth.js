@@ -646,14 +646,15 @@ export async function ensureLsForAccount(accountId) {
 export function markRateLimited(apiKey, durationMs = 5 * 60 * 1000, modelKey = null) {
   const account = accounts.find(a => a.apiKey === apiKey);
   if (!account) return;
-  const until = Date.now() + durationMs;
+  const now = Date.now();
+  const until = now + Math.max(1000, Number(durationMs) || 0);
   if (modelKey) {
     if (!account._modelRateLimits) account._modelRateLimits = {};
-    account._modelRateLimits[modelKey] = until;
-    log.warn(`Account ${getAccountLogLabel(account)} rate-limited on ${modelKey} for ${Math.round(durationMs / 60000)} min`);
+    account._modelRateLimits[modelKey] = Math.max(account._modelRateLimits[modelKey] || 0, until);
+    log.warn(`Account ${getAccountLogLabel(account)} rate-limited on ${modelKey} for ${Math.round((account._modelRateLimits[modelKey] - now) / 60000)} min`);
   } else {
-    account.rateLimitedUntil = until;
-    log.warn(`Account ${getAccountLogLabel(account)} rate-limited (all models) for ${Math.round(durationMs / 60000)} min`);
+    account.rateLimitedUntil = Math.max(account.rateLimitedUntil || 0, until);
+    log.warn(`Account ${getAccountLogLabel(account)} rate-limited (all models) for ${Math.round((account.rateLimitedUntil - now) / 60000)} min`);
   }
 }
 
