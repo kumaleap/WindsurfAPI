@@ -82,12 +82,30 @@ export function getAccountLogLabel(accountLike) {
   return id ? `${id}/${label}` : label;
 }
 
-let _saveInFlight = false;
-let _savePending = false;
+function getActiveModelRateLimitEntries(account, now = Date.now()) {
+  const source = account?._modelRateLimits && typeof account._modelRateLimits === 'object'
+    ? account._modelRateLimits
+    : account?.modelRateLimits && typeof account.modelRateLimits === 'object'
+      ? account.modelRateLimits
+      : {};
+  return Object.entries(source).filter(([, v]) => Number(v) > now);
+}
+
+function getActiveRateLimitState(account, now = Date.now()) {
+  const modelRateLimitEntries = getActiveModelRateLimitEntries(account, now);
+  const rateLimitedUntil = Number(account?.rateLimitedUntil || 0);
+  return {
+    rateLimitedUntil,
+    modelRateLimits: Object.fromEntries(modelRateLimitEntries),
+    isRateLimited: rateLimitedUntil > now || modelRateLimitEntries.length > 0,
+  };
+}
 
 function serializeAccounts() {
   const now = Date.now();
-  return accounts.map(a => ({
+  return accounts.map(a => {
+    const rateLimitState = getActiveRateLimitState(a, now);
+    return ({
     id: a.id, email: a.email, apiKey: a.apiKey,
     apiServerUrl: a.apiServerUrl, method: a.method,
     status: a.status, addedAt: a.addedAt,
@@ -104,22 +122,16 @@ function serializeAccounts() {
     userId: a.userId || '',
     teamId: a.teamId || '',
     planName: a.planName || '',
-    rateLimitedUntil: a.rateLimitedUntil || 0,
-    modelRateLimits: a._modelRateLimits
-      ? Object.fromEntries(Object.entries(a._modelRateLimits).filter(([, v]) => v > now))
-      : {},
+    rateLimitedUntil: rateLimitState.rateLimitedUntil,
+    modelRateLimits: rateLimitState.modelRateLimits,
     // From GetUserStatus — the authoritative tier/entitlement snapshot.
     userStatus: a.userStatus || null,
     userStatusLastFetched: a.userStatusLastFetched || 0,
-  }));
+  });
+  });
 }
 
 function saveAccounts() {
-  if (_saveInFlight) {
-    _savePending = true;
-    return;
-  }
-  _saveInFlight = true;
   const tempFile = ACCOUNTS_FILE + '.tmp';
   try {
     writeFileSync(tempFile, JSON.stringify(serializeAccounts(), null, 2));
@@ -127,12 +139,6 @@ function saveAccounts() {
   } catch (e) {
     log.error('Failed to save accounts:', e.message);
     try { unlinkSync(tempFile); } catch {}
-  } finally {
-    _saveInFlight = false;
-    if (_savePending) {
-      _savePending = false;
-      setImmediate(saveAccounts);
-    }
   }
 }
 
@@ -171,7 +177,10 @@ function loadAccounts() {
         lastUsed: 0, errorCount: 0,
         refreshToken: a.refreshToken || '', expiresAt: 0, refreshTimer: null,
         rateLimitedUntil: a.rateLimitedUntil || 0,
-        _modelRateLimits: a.modelRateLimits || {},
+        _modelRateLimits: {
+          ...(a.modelRateLimits || {}),
+          ...(a._modelRateLimits || {}),
+        },
         addedAt: a.addedAt || Date.now(),
         tier: a.tier || 'unknown',
         tierManual: !!a.tierManual,
@@ -658,11 +667,13 @@ export function markRateLimited(apiKey, durationMs = 5 * 60 * 1000, modelKey = n
   if (modelKey) {
     if (!account._modelRateLimits) account._modelRateLimits = {};
     account._modelRateLimits[modelKey] = Math.max(account._modelRateLimits[modelKey] || 0, until);
+    account.modelRateLimits = { ...(account.modelRateLimits || {}), [modelKey]: account._modelRateLimits[modelKey] };
     log.warn(`Account ${getAccountLogLabel(account)} rate-limited on ${modelKey} for ${Math.round((account._modelRateLimits[modelKey] - now) / 60000)} min`);
   } else {
     account.rateLimitedUntil = Math.max(account.rateLimitedUntil || 0, until);
     log.warn(`Account ${getAccountLogLabel(account)} rate-limited (all models) for ${Math.round((account.rateLimitedUntil - now) / 60000)} min`);
   }
+  account.rateLimited = true;
   saveAccounts();
 }
 
@@ -685,11 +696,9 @@ function isRateLimitedForModel(account, modelKey, now) {
   // Global rate limit
   if (account.rateLimitedUntil && account.rateLimitedUntil > now) return true;
   // Per-model rate limit
-  if (modelKey && account._modelRateLimits) {
-    const until = account._modelRateLimits[modelKey];
+  if (modelKey) {
+    const until = getActiveRateLimitState(account, now).modelRateLimits[modelKey];
     if (until && until > now) return true;
-    // Clean up expired entries
-    if (until && until <= now) delete account._modelRateLimits[modelKey];
   }
   return false;
 }
@@ -760,14 +769,15 @@ export function isAllRateLimited(modelKey) {
   for (const a of accounts) {
     if (a.status !== 'active') continue;
     if (modelKey && !isModelAllowedForAccount(a, modelKey)) continue;
+    const rateLimitState = getActiveRateLimitState(a, now);
     anyEligible = true;
     if (!isRateLimitedForModel(a, modelKey, now)) return { allLimited: false };
     // Track the soonest expiry across both global and per-model limits
-    if (a.rateLimitedUntil && a.rateLimitedUntil > now) {
-      soonestExpiry = Math.min(soonestExpiry, a.rateLimitedUntil);
+    if (rateLimitState.rateLimitedUntil > now) {
+      soonestExpiry = Math.min(soonestExpiry, rateLimitState.rateLimitedUntil);
     }
-    if (modelKey && a._modelRateLimits?.[modelKey] > now) {
-      soonestExpiry = Math.min(soonestExpiry, a._modelRateLimits[modelKey]);
+    if (modelKey && rateLimitState.modelRateLimits[modelKey] > now) {
+      soonestExpiry = Math.min(soonestExpiry, rateLimitState.modelRateLimits[modelKey]);
     }
   }
   if (!anyEligible) return { allLimited: false };
@@ -785,11 +795,7 @@ export function getAccountList() {
     const runtimeApiKey = getRuntimeApiKeyForAccount(a);
     const rpmLimit = rpmLimitFor(a);
     const rpmUsed = pruneRpmHistory(a, now);
-    const modelRateLimits = a._modelRateLimits ? Object.fromEntries(
-      Object.entries(a._modelRateLimits).filter(([, v]) => v > now)
-    ) : {};
-    const rateLimitedUntil = a.rateLimitedUntil || 0;
-    const isRateLimited = !!((rateLimitedUntil > now) || Object.keys(modelRateLimits).length);
+    const rateLimitState = getActiveRateLimitState(a, now);
     return {
       id: a.id,
       email: a.email,
@@ -805,9 +811,9 @@ export function getAccountList() {
       tier: a.tier || 'unknown',
       capabilities: a.capabilities || {},
       lastProbed: a.lastProbed || 0,
-      rateLimitedUntil,
-      rateLimited: isRateLimited,
-      modelRateLimits,
+      rateLimitedUntil: rateLimitState.rateLimitedUntil,
+      rateLimited: rateLimitState.isRateLimited,
+      modelRateLimits: rateLimitState.modelRateLimits,
       modelCooldowns: a._modelCooldowns ? Object.fromEntries(
         Object.entries(a._modelCooldowns)
           .filter(([, v]) => v?.until > now)

@@ -1640,20 +1640,24 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
             });
           } else {
             const rl = isAllRateLimited(modelKey);
-            const retryAfterMs = Math.max(rl.retryAfterMs || 0, getRetryAfterMs(lastErr) || 0, 60_000);
-            const errType = rl.allLimited
+            const lastFailure = inspectFailure(lastErr);
+            const retryAfterMs = Math.max(rl.retryAfterMs || 0, lastFailure.retryAfterMs || 0, 60_000);
+            const errType = rl.allLimited || lastFailure.isRateLimit
               ? 'rate_limit_exceeded'
-              : lastErr?.isRateLimit
-                ? 'rate_limit_exceeded'
-              : lastErr?.isModelError
+              : lastFailure.isPermanentModel || lastErr?.isModelError
                 ? 'model_not_available'
                 : 'upstream_error';
             const errMsg = rl.allLimited
               ? `${model} 所有账号均已达速率限制，请 ${Math.ceil(rl.retryAfterMs / 1000)} 秒后重试`
-              : sanitizeText(lastErr?.message || 'no accounts');
+              : errType === 'rate_limit_exceeded'
+                ? `${model} 宸茶揪閫熺巼闄愬埗锛岃 ${Math.ceil(retryAfterMs / 1000)} 绉掑悗閲嶈瘯`
+                : sanitizeText(lastErr?.message || 'no accounts');
+            const visibleErrMsg = errType === 'rate_limit_exceeded' && !rl.allLimited
+              ? `${model} rate limited, retry in ${Math.ceil(retryAfterMs / 1000)}s`
+              : errMsg;
             send({
               error: {
-                message: errMsg,
+                message: visibleErrMsg,
                 type: errType,
                 ...((rl.allLimited || errType === 'rate_limit_exceeded') ? { retry_after_ms: retryAfterMs } : {}),
               },

@@ -2663,6 +2663,16 @@ const App = {
            </button>`
         : `<span class="text-xs text-dim">-</span>`;
       const rateLimitBadge = a.rateLimited ? '<span class="badge warn">限流中</span>' : '';
+      const activeModelRateLimits = Object.entries(a.modelRateLimits || {})
+        .filter(([, until]) => Number(until) > Date.now());
+      const isRateLimited = !!(
+        a.rateLimited
+        || Number(a.rateLimitedUntil || 0) > Date.now()
+        || activeModelRateLimits.length
+      );
+      const effectiveRateLimitBadge = isRateLimited
+        ? `<span class="badge warn" title="${this.esc(activeModelRateLimits.map(([modelKey]) => modelKey).join(', ') || 'Rate limited')}">Rate Limit</span>`
+        : rateLimitBadge;
       const rpmUsed = a.rpmUsed ?? 0;
       const rpmLimit = a.rpmLimit ?? 0;
       const rpmPct = rpmLimit > 0 ? Math.min(100, Math.round((rpmUsed / rpmLimit) * 100)) : 0;
@@ -2773,7 +2783,7 @@ const App = {
       const statusBadges = `
         <span class="badge ${a.status}">${this.esc(a.status)}</span>
         <button class="btn btn-outline btn-xs account-inline-action" onclick="App.probeAccount('${accountId}')" title="探测能力">探测</button>
-        ${rateLimitBadge}
+        ${effectiveRateLimitBadge}
       `;
       const keyHtml = a.keyPrefix
         ? `<button class="account-copy-chip" onclick="App.copyKey('${this.escJsSingle(a.apiKey || '')}')" title="点击复制 API Key">${this.esc(a.keyPrefix)}</button>`
@@ -2784,7 +2794,7 @@ const App = {
       const lastUsedText = a.lastUsed ? new Date(a.lastUsed).toLocaleString() : '未使用';
       const cardClass = [
         'account-card',
-        a.rateLimited ? 'is-warning' : '',
+        isRateLimited ? 'is-warning' : '',
         a.status !== 'active' ? 'is-muted' : '',
       ].filter(Boolean).join(' ');
       const tierHtml = `
@@ -3963,7 +3973,7 @@ const App = {
       </div>
       <div class="card info">
         <div class="card-header"><div class="card-title">限流中</div></div>
-        <div class="card-value">${accounts.filter(a => a.rateLimited).length}</div>
+        <div class="card-value">${accounts.filter(a => a.rateLimited || Number(a.rateLimitedUntil || 0) > Date.now() || Object.values(a.modelRateLimits || {}).some(v => Number(v) > Date.now())).length}</div>
         <div class="card-sub">暂时不参与调度</div>
       </div>
     `;
