@@ -389,6 +389,54 @@ code {
   margin-top: 14px;
   flex-wrap: wrap;
 }
+.task-progress {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.task-progress.info { border-color: rgba(14, 165, 233, .28); }
+.task-progress.success { border-color: rgba(16, 185, 129, .28); }
+.task-progress.error { border-color: rgba(239, 68, 68, .28); }
+.task-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.task-progress-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.task-progress-step {
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.task-progress-bar {
+  margin-top: 10px;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .08);
+}
+.task-progress-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), #22c55e);
+  transition: width .2s ease;
+}
+.task-progress-detail {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
 
 /* Input group (prefix + input) */
 .input-group { display: flex; gap: 6px; align-items: stretch; }
@@ -627,6 +675,18 @@ tbody tr:hover td { background: var(--surface-2); }
   flex-wrap: wrap;
   gap: 4px;
   align-items: center;
+}
+.account-card-meta .tier {
+  padding: 2px 8px;
+  font-size: 10px;
+  letter-spacing: .03em;
+}
+.account-inline-action {
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 1;
 }
 .section-title-row {
   display: flex;
@@ -1397,7 +1457,7 @@ window._firebaseOAuth = async function(provider) {
     <div class="page-header">
       <div>
         <h1 class="page-title" data-i18n="page.accounts">账号管理</h1>
-        <div class="page-subtitle">维护账号池，探测各账号订阅层级与可用模型</div>
+        <div class="page-subtitle">维护账号池，探测各账号订阅层级、可用模型和额度信息</div>
       </div>
       <div class="btn-group">
         <button class="btn btn-outline" onclick="App.refreshAllCredits()">
@@ -1415,21 +1475,21 @@ window._firebaseOAuth = async function(provider) {
       <div class="section-header">
         <div>
           <div class="section-title">添加账号</div>
-          <div class="section-desc">支持 API Key、官方 Auth Token，以及 auth1_/devin-session-token$ 串</div>
+          <div class="section-desc">支持 API Key、官方 Auth Token，以及 `auth1_...` / `devin-session-token$...`</div>
         </div>
       </div>
       <div class="section-body">
         <div style="padding:8px 12px;margin-bottom:12px;background:var(--surface-2);border-radius:var(--radius);font-size:12px;color:var(--text-muted);line-height:1.6">
-          推荐用 Token 方式添加账号 点
+          推荐优先使用 Token 方式添加账号，访问
           <a href="https://windsurf.com/show-auth-token" target="_blank" style="color:var(--accent);font-weight:600">windsurf.com/show-auth-token</a>
-          登录后复制 Token 粘贴到下面就行 所有登录方式（邮箱/Google/GitHub）都能用。
-          如果你拿到的是卖家给的 auth 串，也可以直接粘贴 auth1_... 或 devin-session-token$...
+          登录后复制 Auth Token 直接粘贴即可。邮箱、Google、GitHub 注册的账号都能用。
+          如果你拿到的是卖家给的 auth 串，也可以直接粘贴 `auth1_...` 或 `devin-session-token$...`。
         </div>
         <div style="margin-bottom:14px;padding:14px;border:1px solid rgba(99,102,241,.28);background:linear-gradient(180deg, rgba(99,102,241,.08), rgba(99,102,241,.03));border-radius:var(--radius)">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px">
             <div>
               <div style="font-size:13px;font-weight:600">快速导入 auth 串</div>
-              <div class="text-sm text-muted">适合卖家只给 auth 串的场景，支持 auth1_...、devin-session-token$... 和官方 Auth Token。</div>
+              <div class="text-sm text-muted">适合卖家只给 auth 串的场景，支持 `auth1_...`、`devin-session-token$...` 和官方 Auth Token。</div>
             </div>
             <span class="badge info no-dot">自动识别</span>
           </div>
@@ -1444,7 +1504,7 @@ window._firebaseOAuth = async function(provider) {
             </div>
           </div>
           <div class="field-row-actions">
-            <button class="btn btn-primary" onclick="App.quickImportAuth()">快速导入 auth 串</button>
+            <button class="btn btn-primary" id="acc-auth-import-btn" onclick="App.quickImportAuth()">快速导入 auth 串</button>
             <button class="btn btn-outline" onclick="App.fillQuickAuthToMain()">填入下方通用输入框</button>
           </div>
         </div>
@@ -1466,8 +1526,9 @@ window._firebaseOAuth = async function(provider) {
           </div>
         </div>
         <div class="field-row-actions">
-          <button class="btn btn-primary" onclick="App.addAccount()">添加账号</button>
+          <button class="btn btn-primary" id="acc-add-btn" onclick="App.addAccount()">添加账号</button>
         </div>
+        <div id="account-import-progress" class="task-progress info hidden" aria-live="polite"></div>
       </div>
     </div>
 
@@ -1477,7 +1538,7 @@ window._firebaseOAuth = async function(provider) {
       <div class="section-header">
         <div>
           <div class="section-title">账号列表</div>
-          <div class="section-desc">点击探测按钮可单独更新某个账号的能力信息</div>
+          <div class="section-desc">点击探测按钮可单独刷新某个账号的能力、订阅和额度信息</div>
         </div>
       </div>
       <div class="section-body tight">
@@ -2711,6 +2772,7 @@ const App = {
         : `<span class="text-xs text-dim">-</span>`;
       const statusBadges = `
         <span class="badge ${a.status}">${this.esc(a.status)}</span>
+        <button class="btn btn-outline btn-xs account-inline-action" onclick="App.probeAccount('${accountId}')" title="探测能力">探测</button>
         ${rateLimitBadge}
       `;
       const keyHtml = a.keyPrefix
@@ -2740,7 +2802,6 @@ const App = {
             </div>
           </div>
           <div class="account-card-actions">
-            <button class="btn btn-ghost btn-xs" onclick="App.probeAccount('${accountId}')" title="探测能力">探测</button>
             <button class="btn btn-ghost btn-xs" onclick="App.refreshCredits('${accountId}')" title="刷新额度">额度</button>
             <button class="btn btn-outline btn-xs" onclick="App.openAccountActions('${accountId}')" title="更多操作">更多</button>
           </div>
@@ -2792,15 +2853,17 @@ const App = {
       || !!credits.lastError;
   },
 
-  async refreshAccountCardsUntilReady(accountId, tries = 4, delayMs = 1500) {
+  async refreshAccountCardsUntilReady(accountId, tries = 4, delayMs = 1500, onProgress = null) {
     await this.loadAccounts();
-    if (!accountId) return;
+    if (!accountId) return false;
     for (let i = 0; i < tries; i += 1) {
       const account = (this.accountsCache || []).find(a => a.id === accountId);
-      if (this.accountHasDisplayData(account)) return;
+      if (this.accountHasDisplayData(account)) return true;
+      if (typeof onProgress === 'function') onProgress(i + 1, tries);
       await new Promise(resolve => setTimeout(resolve, delayMs));
       await this.loadAccounts();
     }
+    return false;
   },
 
   async refreshCredits(id) {
@@ -3158,6 +3221,227 @@ const App = {
       this.loadAccounts();
     } else {
       this.toast(r.error || '导入失败', 'error');
+    }
+  },
+
+  setButtonBusy(target, busy, busyText = '处理中...') {
+    const btn = typeof target === 'string' ? document.getElementById(target) : target;
+    if (!btn) return;
+    if (busy) {
+      if (!btn.dataset.idleHtml) btn.dataset.idleHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = `<span class="spinner"></span> ${busyText}`;
+      return;
+    }
+    btn.disabled = false;
+    if (btn.dataset.idleHtml) btn.innerHTML = btn.dataset.idleHtml;
+  },
+
+  setAccountImportProgress({ title = '处理中', detail = '', stepText = '', percent = 20, tone = 'info', busy = true } = {}) {
+    const box = document.getElementById('account-import-progress');
+    if (!box) return;
+    clearTimeout(this.accountImportProgressTimer);
+    const safePercent = Math.max(8, Math.min(100, Number(percent) || 0));
+    box.className = `task-progress ${tone}`;
+    box.classList.remove('hidden');
+    box.innerHTML = `
+      <div class="task-progress-head">
+        <div class="task-progress-title">${busy ? '<span class="spinner"></span>' : ''}<span>${this.esc(title)}</span></div>
+        ${stepText ? `<div class="task-progress-step">${this.esc(stepText)}</div>` : ''}
+      </div>
+      <div class="task-progress-bar"><span style="width:${safePercent}%"></span></div>
+      ${detail ? `<div class="task-progress-detail">${this.esc(detail)}</div>` : ''}
+    `;
+  },
+
+  clearAccountImportProgress(delayMs = 0) {
+    clearTimeout(this.accountImportProgressTimer);
+    const hide = () => {
+      const box = document.getElementById('account-import-progress');
+      if (!box) return;
+      box.classList.add('hidden');
+      box.innerHTML = '';
+    };
+    if (delayMs > 0) {
+      this.accountImportProgressTimer = setTimeout(hide, delayMs);
+      return;
+    }
+    hide();
+  },
+
+  async addAccount() {
+    const type = document.getElementById('acc-type').value;
+    const key = document.getElementById('acc-key').value.trim();
+    const label = document.getElementById('acc-label').value.trim();
+    if (!key) return this.toast('请输入 Key 或 Token', 'error');
+
+    const buttonId = 'acc-add-btn';
+    const body = type === 'api_key' ? { api_key: key, label } : { token: key, label };
+    this.setButtonBusy(buttonId, true, type === 'api_key' ? '添加中...' : '导入中...');
+    this.setAccountImportProgress({
+      title: type === 'api_key' ? '正在添加账号' : '正在导入账号',
+      detail: '已提交到服务端，正在校验凭据并拉取账号信息。',
+      stepText: '第 1 步 / 3',
+      percent: 24,
+    });
+
+    try {
+      const r = await this.api('POST', '/accounts', body);
+      if (!r.success) throw new Error(r.error || '添加失败');
+
+      document.getElementById('acc-key').value = '';
+      document.getElementById('acc-label').value = '';
+      this.setAccountImportProgress({
+        title: '账号已写入，正在拉取展示数据',
+        detail: '正在刷新列表并等待额度、有效期等信息返回。',
+        stepText: '第 2 步 / 3',
+        percent: 62,
+      });
+
+      await this.refreshAccountCardsUntilReady(r.account?.id || null, 5, 1200, (attempt, total) => {
+        const ratio = 62 + Math.round((attempt / Math.max(total, 1)) * 26);
+        this.setAccountImportProgress({
+          title: '账号已写入，正在拉取展示数据',
+          detail: `正在等待账号信息返回（${attempt}/${total}）...`,
+          stepText: '第 2 步 / 3',
+          percent: ratio,
+        });
+      });
+
+      this.setAccountImportProgress({
+        title: '账号添加完成',
+        detail: '列表已刷新，可以继续添加下一个账号。',
+        stepText: '第 3 步 / 3',
+        percent: 100,
+        tone: 'success',
+        busy: false,
+      });
+      this.toast('账号已添加');
+      this.clearAccountImportProgress(2400);
+    } catch (e) {
+      this.setAccountImportProgress({
+        title: '添加失败',
+        detail: e.message || '请求未完成，请稍后重试。',
+        stepText: '已中断',
+        percent: 100,
+        tone: 'error',
+        busy: false,
+      });
+      this.toast(e.message || '添加失败', 'error');
+      this.clearAccountImportProgress(4000);
+    } finally {
+      this.setButtonBusy(buttonId, false);
+    }
+  },
+
+  fillQuickAuthToMain() {
+    const raw = document.getElementById('acc-auth-quick')?.value.trim() || '';
+    const label = document.getElementById('acc-auth-label')?.value.trim() || '';
+    if (!raw) return this.toast('请先粘贴 auth 串', 'error');
+    document.getElementById('acc-type').value = 'token';
+    document.getElementById('acc-key').value = raw;
+    document.getElementById('acc-label').value = label;
+    document.getElementById('acc-key').focus();
+    this.toast('已填入下方输入框');
+  },
+
+  async quickImportAuth() {
+    const token = document.getElementById('acc-auth-quick')?.value.trim() || '';
+    const label = document.getElementById('acc-auth-label')?.value.trim() || '';
+    if (!token) return this.toast('请先粘贴 auth 串或 Token', 'error');
+
+    const lines = token.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+    const buttonId = 'acc-auth-import-btn';
+    this.setButtonBusy(buttonId, true, lines.length > 1 ? '批量导入中...' : '导入中...');
+
+    try {
+      if (lines.length > 1) {
+        this.setAccountImportProgress({
+          title: `正在批量导入 ${lines.length} 个账号`,
+          detail: '服务端正在逐个校验账号并写入本地列表，请稍候。',
+          stepText: '第 1 步 / 3',
+          percent: 18,
+        });
+        const entries = lines.map((line, idx) => ({
+          token: line,
+          label: label ? `${label}-${idx + 1}` : '',
+        }));
+        const r = await this.api('POST', '/accounts/batch', { entries });
+        if (!r.success) throw new Error(r.error || '批量导入失败');
+
+        document.getElementById('acc-auth-quick').value = '';
+        document.getElementById('acc-auth-label').value = '';
+        this.setAccountImportProgress({
+          title: '账号已导入，正在刷新列表',
+          detail: `成功 ${r.successCount || 0} / 失败 ${r.failCount || 0}，正在同步到当前页面。`,
+          stepText: '第 2 步 / 3',
+          percent: 72,
+        });
+        await this.loadAccounts();
+        this.setAccountImportProgress({
+          title: '批量导入完成',
+          detail: `成功 ${r.successCount || 0} / 失败 ${r.failCount || 0}`,
+          stepText: '第 3 步 / 3',
+          percent: 100,
+          tone: (r.failCount || 0) > 0 ? 'error' : 'success',
+          busy: false,
+        });
+        this.toast(`批量导入完成，成功 ${r.successCount || 0} / 失败 ${r.failCount || 0}`, (r.failCount || 0) > 0 ? 'error' : 'success');
+        this.clearAccountImportProgress((r.failCount || 0) > 0 ? 4200 : 2600);
+        return;
+      }
+
+      this.setAccountImportProgress({
+        title: '正在导入账号',
+        detail: '已提交到服务端，正在校验 auth 串并获取账号信息。',
+        stepText: '第 1 步 / 3',
+        percent: 24,
+      });
+      const r = await this.api('POST', '/accounts', { token, label });
+      if (!r.success) throw new Error(r.error || '导入失败');
+
+      document.getElementById('acc-auth-quick').value = '';
+      document.getElementById('acc-auth-label').value = '';
+      this.setAccountImportProgress({
+        title: '账号已导入，正在拉取展示数据',
+        detail: '正在刷新列表并等待额度、有效期等信息返回。',
+        stepText: '第 2 步 / 3',
+        percent: 62,
+      });
+
+      await this.refreshAccountCardsUntilReady(r.account?.id || null, 5, 1200, (attempt, total) => {
+        const ratio = 62 + Math.round((attempt / Math.max(total, 1)) * 26);
+        this.setAccountImportProgress({
+          title: '账号已导入，正在拉取展示数据',
+          detail: `正在等待账号信息返回（${attempt}/${total}）...`,
+          stepText: '第 2 步 / 3',
+          percent: ratio,
+        });
+      });
+
+      this.setAccountImportProgress({
+        title: '账号导入完成',
+        detail: '列表已刷新，可以继续导入下一个账号。',
+        stepText: '第 3 步 / 3',
+        percent: 100,
+        tone: 'success',
+        busy: false,
+      });
+      this.toast('账号已导入');
+      this.clearAccountImportProgress(2400);
+    } catch (e) {
+      this.setAccountImportProgress({
+        title: '导入失败',
+        detail: e.message || '请求未完成，请稍后重试。',
+        stepText: '已中断',
+        percent: 100,
+        tone: 'error',
+        busy: false,
+      });
+      this.toast(e.message || '导入失败', 'error');
+      this.clearAccountImportProgress(4000);
+    } finally {
+      this.setButtonBusy(buttonId, false);
     }
   },
 
