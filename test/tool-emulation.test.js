@@ -183,7 +183,9 @@ describe('buildToolPreamble (injection-guard safety)', () => {
     assert.match(full, /Preserve quotes, flags, pipes, redirections/);
     assert.match(full, /Read: use "file_path" exactly/);
     assert.ok(!preamble.includes('Tool argument fidelity rules:'),
-      'user-message fallback must remain compact and schema-free');
+      'user-message fallback must not include the long proto-only rule block');
+    assert.ok(preamble.includes('arguments.command'),
+      'user-message fallback should include the compact Bash argument hint');
   });
 });
 

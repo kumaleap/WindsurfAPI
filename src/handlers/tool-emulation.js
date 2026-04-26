@@ -50,22 +50,17 @@ Now respond to the user request above. Use <tool_call> if appropriate, otherwise
  */
 export function buildToolPreamble(tools) {
   if (!Array.isArray(tools) || tools.length === 0) return '';
-  const lines = [TOOL_PROTOCOL_HEADER];
+  const names = [];
   for (const t of tools) {
-    if (t?.type !== 'function' || !t.function) continue;
-    const { name, description, parameters } = t.function;
-    lines.push('');
-    lines.push(`### ${name}`);
-    if (description) lines.push(description);
-    if (parameters) {
-      lines.push('parameters schema:');
-      lines.push('```json');
-      lines.push(JSON.stringify(parameters, null, 2));
-      lines.push('```');
-    }
+    if (t?.type !== 'function' || !t.function?.name) continue;
+    names.push(t.function.name);
   }
-  lines.push(TOOL_PROTOCOL_FOOTER);
-  return lines.join('\n');
+  if (!names.length) return '';
+  const hints = [];
+  const lowerNames = new Set(names.map(n => n.toLowerCase()));
+  if (lowerNames.has('bash')) hints.push('For Bash, put the complete shell command in arguments.command.');
+  if (lowerNames.has('read')) hints.push('For Read, put the exact path in arguments.file_path.');
+  return `Tools available this turn: ${names.join(', ')}. To call one, emit a single-line block: <tool_call>{"name":"...","arguments":{...}}</tool_call>. ${hints.join(' ')} Otherwise answer directly in plain text. After the last <tool_call>, stop generating; the caller returns results in the next turn as <tool_result tool_call_id="...">...</tool_result>.`;
 }
 
 /**
