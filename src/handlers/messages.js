@@ -168,6 +168,7 @@ function mapErrorType(type) {
 function anthropicToOpenAI(body) {
   const thinkingConfig = normalizeThinkingConfig(body?.thinking);
   const messages = [];
+  const toolNameById = new Map();
   if (body.system) {
     const sysText = typeof body.system === 'string'
       ? body.system
@@ -195,17 +196,23 @@ function anthropicToOpenAI(body) {
         } else if (block.type === 'thinking') {
           // Thinking blocks from assistant history — skip; the model will regenerate
         } else if (block.type === 'tool_use' && role === 'assistant') {
+          const id = block.id || `call_${randomUUID().slice(0, 8)}`;
+          toolNameById.set(id, block.name || '');
           toolCalls.push({
-            id: block.id || `call_${randomUUID().slice(0, 8)}`,
+            id,
             type: 'function',
             function: { name: block.name, arguments: JSON.stringify(block.input || {}) },
           });
         } else if (block.type === 'tool_result') {
-          const content = typeof block.content === 'string'
+          let content = typeof block.content === 'string'
             ? block.content
             : Array.isArray(block.content)
               ? block.content.map(b => b.text || '').join('\n')
               : JSON.stringify(block.content);
+          content = annotateRiskyReadToolResult(content, {
+            toolName: toolNameById.get(block.tool_use_id),
+            isError: !!block.is_error,
+          });
           toolResults.push({ role: 'tool', tool_call_id: block.tool_use_id, content });
         }
       }
@@ -416,6 +423,22 @@ function estimateCountTokens(body) {
   // Keep the estimate conservative so client-side budget checks don't reject
   // valid requests simply because our local approximation undercounted.
   return estimateCharTokens(chars + 32);
+}
+
+export function annotateRiskyReadToolResult(content, { toolName = '', isError = false } = {}) {
+  if (toolName !== 'Read' || typeof content !== 'string' || !content) return content;
+  const lower = content.toLowerCase();
+  const isOversizeNoContent = isError
+    && /file content \([^)]+\) exceeds maximum allowed size/i.test(content)
+    && /use offset and limit parameters/i.test(content);
+  const isCachedStub = (
+    /(?:file )?(?:content )?(?:unchanged|cached)/i.test(content)
+    || /(?:内容未变更|已缓存)/.test(content)
+  ) && content.length < 2000;
+  const mentionsTruncation = /truncated|截断|丢失/.test(lower);
+  if (!isOversizeNoContent && !isCachedStub && !mentionsTruncation) return content;
+
+  return `${content}\n\n[WindsurfAPI note: This Read result does not prove the full file body is available in the current conversation. If the task depends on full file contents, use Read with offset/limit or another content-bearing tool result before returning PASS.]`;
 }
 
 // ─── OpenAI → Anthropic non-stream response translation ──────
