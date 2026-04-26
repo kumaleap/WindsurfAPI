@@ -11,7 +11,7 @@
  * No buffering, so first-token latency matches the upstream Cascade stream.
  */
 
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { handleChatCompletions } from './chat.js';
 import { log } from '../config.js';
 import { resolveThinkingModel } from '../models.js';
@@ -32,6 +32,28 @@ const SERVER_SIDE_ANTHROPIC_TOOL_TYPES = new Set([
   'code_execution_20250522',
   'advisor_20260301',
 ]);
+
+function sha256Hex(value) {
+  return createHash('sha256').update(String(value || '')).digest('hex');
+}
+
+export function extractCallerSubKey(body) {
+  const userId = body?.metadata?.user_id;
+  if (typeof userId !== 'string' || !userId) return '';
+  let parsed = null;
+  try { parsed = JSON.parse(userId); } catch {}
+  let tag = '';
+  if (parsed && typeof parsed === 'object') {
+    tag = parsed.device_id || parsed.deviceId
+      || parsed.session_id || parsed.sessionId
+      || parsed.account_uuid || parsed.accountUuid
+      || '';
+  } else {
+    tag = userId;
+  }
+  if (!tag) return '';
+  return sha256Hex(tag).slice(0, 16);
+}
 
 function estimateCharTokens(chars) {
   return Math.max(1, Math.ceil(Math.max(0, chars) / 4));
@@ -696,7 +718,7 @@ function createCaptureRes(translator) {
 
 // ─── Main entry ───────────────────────────────────────────────
 
-export async function handleMessages(body) {
+export async function handleMessages(body, context = {}) {
   const msgId = genMsgId();
   const requestedModel = body.model || 'claude-sonnet-4.6';
   const wantStream = !!body.stream;
@@ -712,8 +734,14 @@ export async function handleMessages(body) {
     });
   }
 
+  const chatHandler = context.handleChatCompletions || handleChatCompletions;
+  const subKey = extractCallerSubKey(body);
+  const effectiveContext = subKey
+    ? { ...context, callerKey: `${context.callerKey || ''}:user:${subKey}` }
+    : context;
+
   if (!wantStream) {
-    const result = await handleChatCompletions({ ...openaiBody, stream: false });
+    const result = await chatHandler({ ...openaiBody, stream: false }, effectiveContext);
     if (result.status !== 200) {
       return {
         status: result.status,
@@ -733,7 +761,7 @@ export async function handleMessages(body) {
   // Streaming path — ask handleChatCompletions for its streaming handler and
   // point its writes at our translator shim. This lets the upstream Cascade
   // poll loop drive the downstream SSE in real time — no buffer-then-replay.
-  const streamResult = await handleChatCompletions({ ...openaiBody, stream: true });
+  const streamResult = await chatHandler({ ...openaiBody, stream: true }, effectiveContext);
 
   if (!streamResult.stream) {
     // The OpenAI path returned a non-stream error (e.g. 403 model_not_entitled)
