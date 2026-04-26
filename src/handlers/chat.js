@@ -379,6 +379,74 @@ export function isThinkingRequested(body) {
   return false;
 }
 
+function recentUserText(messages) {
+  if (!Array.isArray(messages)) return '';
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === 'user') return contentToPlainText(messages[i].content);
+  }
+  return '';
+}
+
+function shellUnquote(text) {
+  const s = String(text || '').trim();
+  if (s.length >= 2 && ((s[0] === '"' && s.at(-1) === '"') || (s[0] === '\'' && s.at(-1) === '\''))) {
+    return s.slice(1, -1);
+  }
+  return s;
+}
+
+function trimCommandSentence(text) {
+  const s = String(text || '').trim();
+  let quote = '';
+  let escaped = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === '\\' && quote) { escaped = true; continue; }
+    if (quote) {
+      if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === '"' || ch === '\'') {
+      quote = ch;
+      continue;
+    }
+    if (ch === '.' && /\s/.test(s[i + 1] || '')) return s.slice(0, i).trim();
+  }
+  return s.replace(/[.。]\s*$/, '').trim();
+}
+
+function extractRequestedBashCommands(text) {
+  const src = String(text || '');
+  const out = [];
+  const patterns = [
+    /(?:command|run|execute)\s+(?:exactly\s+)?(?::\s*)?`([^`]+)`/gi,
+    /(?:command|run|execute)\s+(?:exactly\s+)?(?::\s*)?([^\n]+)/gi,
+  ];
+  for (const re of patterns) {
+    for (const m of src.matchAll(re)) {
+      const candidate = shellUnquote(trimCommandSentence(m[1])).trim();
+      if (candidate && /\s/.test(candidate)) out.push(candidate);
+    }
+  }
+  return [...new Set(out)];
+}
+
+export function repairToolCallArguments(tc, messages) {
+  if (!tc || String(tc.name || '').toLowerCase() !== 'bash' || typeof tc.argumentsJson !== 'string') return tc;
+  let args;
+  try { args = JSON.parse(tc.argumentsJson); } catch { return tc; }
+  if (!args || typeof args.command !== 'string') return tc;
+  const current = args.command.trim();
+  if (!current) return tc;
+  for (const requested of extractRequestedBashCommands(recentUserText(messages))) {
+    if (requested.length > current.length && requested.startsWith(current)) {
+      return { ...tc, argumentsJson: JSON.stringify({ ...args, command: requested }) };
+    }
+  }
+  return tc;
+}
+
 function inspectFailure(err) {
   const message = err?.message || '';
   return {
@@ -1170,7 +1238,7 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
     }
     allThinking = sanitizeText(allThinking);
     if (toolCalls.length) {
-      toolCalls = toolCalls.map(tc => sanitizeToolCall(tc));
+      toolCalls = toolCalls.map(tc => sanitizeToolCall(repairToolCallArguments(tc, messages)));
     }
 
     // Check the cascade back into the pool under the *post-turn* fingerprint
@@ -1590,7 +1658,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
                   if (activeToolCallMode) {
                     let acceptedToolCall = false;
                     for (const tc of done) {
-                      if (acceptToolCall(tc)) acceptedToolCall = true;
+                      if (acceptToolCall(repairToolCallArguments(tc, messages))) acceptedToolCall = true;
                     }
                     if (acceptedToolCall) scheduleToolModeEarlyFinish();
                   }
@@ -1676,7 +1744,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
               if (activeToolCallMode) {
                 let acceptedTailToolCall = false;
                 for (const tc of tail.toolCalls) {
-                  if (acceptToolCall(tc)) acceptedTailToolCall = true;
+                  if (acceptToolCall(repairToolCallArguments(tc, messages))) acceptedTailToolCall = true;
                 }
                 if (acceptedTailToolCall) scheduleToolModeEarlyFinish();
               }
