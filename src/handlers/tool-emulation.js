@@ -144,6 +144,27 @@ export function buildToolPreambleForProto(tools, toolChoice) {
   return lines.join('\n');
 }
 
+export function buildCompactToolPreambleForProto(tools, toolChoice) {
+  if (!Array.isArray(tools) || tools.length === 0) return '';
+  const { mode, forceName } = resolveToolChoice(toolChoice);
+  const names = [];
+  for (const t of tools) {
+    if (t?.type !== 'function' || !t.function?.name) continue;
+    names.push(t.function.name);
+  }
+  if (!names.length) return '';
+
+  const lines = [TOOL_PROTOCOL_SYSTEM_HEADER];
+  lines.push(TOOL_CHOICE_SUFFIX[mode] || TOOL_CHOICE_SUFFIX.auto);
+  if (forceName) {
+    lines.push(`7. You MUST call the function "${forceName}". No other function and no direct answer.`);
+  }
+  lines.push('');
+  lines.push(`Available functions: ${names.join(', ')}.`);
+  lines.push('Parameter schemas are omitted in this preamble due to total tool-list size. Match each <tool_call> to the function name; the calling agent will validate argument shapes when it executes the call.');
+  return lines.join('\n');
+}
+
 function safeParseJson(s) {
   try { return JSON.parse(s); } catch { return null; }
 }

@@ -26,7 +26,7 @@ import {
 } from '../conversation-pool.js';
 import {
   normalizeMessagesForCascade, ToolCallStreamParser, parseToolCallsFromText,
-  buildToolPreambleForProto,
+  buildToolPreambleForProto, buildCompactToolPreambleForProto,
 } from './tool-emulation.js';
 import { sanitizeText, sanitizeToolCall, PathSanitizeStream } from '../sanitize.js';
 
@@ -597,6 +597,32 @@ function shouldUseLocalResponseCache(body, messages, emulateTools) {
   return true;
 }
 
+export function applyToolPreambleBudget(tools, toolChoice, opts = {}) {
+  const full = buildToolPreambleForProto(tools || [], toolChoice);
+  const softBytes = opts.softBytes ?? parseInt(process.env.TOOL_PREAMBLE_SOFT_BYTES || '24000', 10);
+  const hardBytes = opts.hardBytes ?? parseInt(process.env.TOOL_PREAMBLE_HARD_BYTES || '48000', 10);
+  if (!full) {
+    return { ok: true, preamble: '', fullBytes: 0, finalBytes: 0, compacted: false, softBytes, hardBytes };
+  }
+
+  const fullBytes = Buffer.byteLength(full, 'utf8');
+  let preamble = full;
+  let finalBytes = fullBytes;
+  let compacted = false;
+
+  if (fullBytes > softBytes) {
+    preamble = buildCompactToolPreambleForProto(tools || [], toolChoice);
+    finalBytes = Buffer.byteLength(preamble, 'utf8');
+    compacted = true;
+  }
+
+  if (finalBytes > hardBytes) {
+    return { ok: false, preamble, fullBytes, finalBytes, compacted, softBytes, hardBytes };
+  }
+
+  return { ok: true, preamble, fullBytes, finalBytes, compacted, softBytes, hardBytes };
+}
+
 /**
  * Build an OpenAI-shaped `usage` object, preferring server-reported token
  * counts from Cascade's CortexStepMetadata.model_usage when available, and
@@ -786,7 +812,28 @@ export async function handleChatCompletions(body) {
   // pass empty tools to normalizeMessagesForCascade so it only rewrites
   // role:tool / assistant.tool_calls messages without injecting a user-level
   // preamble (that's now handled at the proto layer).
-  const toolPreamble = activeToolCallMode ? buildToolPreambleForProto(tools || [], tool_choice) : '';
+  let toolPreamble = '';
+  if (activeToolCallMode) {
+    const budget = applyToolPreambleBudget(tools || [], tool_choice);
+    if (budget.fullBytes > budget.softBytes && budget.compacted) {
+      log.warn(`Probe[${reqId}]: toolPreamble ${Math.round(budget.fullBytes / 1024)}KB exceeds soft cap ${Math.round(budget.softBytes / 1024)}KB; falling back to names-only preamble (${Math.round(budget.finalBytes / 1024)}KB, ${(tools || []).length} tools)`);
+    }
+    if (!budget.ok) {
+      log.warn(`Probe[${reqId}]: toolPreamble ${Math.round(budget.finalBytes / 1024)}KB exceeds hard cap ${Math.round(budget.hardBytes / 1024)}KB after ${budget.compacted ? 'names-only fallback' : 'full-schema build'}; rejecting (${(tools || []).length} tools)`);
+      return {
+        status: 400,
+        body: {
+          error: {
+            message: `Tool definitions are too large (${Math.round(budget.finalBytes / 1024)}KB > ${Math.round(budget.hardBytes / 1024)}KB after compaction). Reduce the number of tools or shorten tool names.`,
+            type: 'invalid_request_error',
+            param: 'tools',
+            code: 'tool_preamble_too_large',
+          },
+        },
+      };
+    }
+    toolPreamble = budget.preamble;
+  }
   let cascadeMessages = emulateTools
     ? normalizeMessagesForCascade(messages, [])
     : [...messages];
