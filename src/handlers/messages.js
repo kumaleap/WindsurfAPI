@@ -44,7 +44,7 @@ function normalizeThinkingConfig(thinking) {
   if (thinking.enabled === true) config.enabled = true;
   if (typeof thinking.type === 'string') {
     const lowered = thinking.type.trim().toLowerCase();
-    if (lowered === 'enabled') config.enabled = true;
+    if (lowered && lowered !== 'disabled') config.enabled = true;
     if (lowered === 'disabled') config.enabled = false;
   }
   if (typeof thinking.budget_tokens === 'number' && Number.isFinite(thinking.budget_tokens) && thinking.budget_tokens > 0) {
@@ -197,6 +197,28 @@ function anthropicToOpenAI(body) {
       parameters: t.input_schema || {},
     },
   }));
+  // Claude Code 2.x and Anthropic SDK clients send response shape and
+  // reasoning controls inside body.output_config — output_config.effort
+  // mirrors OpenAI's reasoning_effort, and output_config.format carries
+  // structured-output schemas Anthropic-side instead of OpenAI's
+  // response_format. The internal handler speaks OpenAI dialect, so
+  // unwrap both here so chat.js sees them on the path it already knows.
+  const oc = body.output_config;
+  const ocEffort = oc?.effort;
+  const ocFormat = oc?.format;
+  let translatedResponseFormat = null;
+  if (ocFormat?.type === 'json_schema' && ocFormat.schema) {
+    translatedResponseFormat = {
+      type: 'json_schema',
+      json_schema: {
+        name: ocFormat.name || 'response',
+        schema: ocFormat.schema,
+        strict: ocFormat.strict !== false,
+      },
+    };
+  } else if (ocFormat?.type === 'json_object') {
+    translatedResponseFormat = { type: 'json_object' };
+  }
   return {
     model: resolveAnthropicModel(body),
     messages,
@@ -207,6 +229,10 @@ function anthropicToOpenAI(body) {
     ...(body.temperature != null ? { temperature: body.temperature } : {}),
     ...(body.top_p != null ? { top_p: body.top_p } : {}),
     ...(body.stop_sequences ? { stop: body.stop_sequences } : {}),
+    ...(body.tool_choice ? { tool_choice: mapAnthropicToolChoice(body.tool_choice) } : {}),
+    ...(body.thinking ? { thinking: body.thinking } : {}),
+    ...(ocEffort ? { reasoning_effort: ocEffort } : {}),
+    ...(translatedResponseFormat ? { response_format: translatedResponseFormat } : {}),
   };
 }
 

@@ -372,6 +372,13 @@ function getRetryAfterMs(source, fallbackMs = 0) {
   return fallbackMs;
 }
 
+export function isThinkingRequested(body) {
+  const thinkingType = body?.thinking?.type;
+  if (thinkingType && thinkingType !== 'disabled') return true;
+  if (body?.reasoning_effort) return true;
+  return false;
+}
+
 function inspectFailure(err) {
   const message = err?.message || '';
   return {
@@ -729,8 +736,27 @@ export async function handleChatCompletions(body) {
   }
 
   const requestedModel = reqModel || config.defaultModel;
-  const modelKey = resolveModel(requestedModel);
-  const modelInfo = getModelInfo(modelKey);
+  const requestedModelKey = resolveModel(requestedModel);
+  const wantThinking = isThinkingRequested(body);
+  const modelKey = wantThinking
+    && !requestedModelKey.includes('thinking')
+    && getModelInfo(`${requestedModelKey}-thinking`)
+    ? `${requestedModelKey}-thinking`
+    : requestedModelKey;
+  const modelInfo = getModelInfo(modelKey) || getModelInfo(requestedModelKey);
+  if (!modelInfo) {
+    return {
+      status: 400,
+      body: {
+        error: {
+          message: `Unsupported model: ${requestedModel}`,
+          type: 'invalid_request_error',
+          param: 'model',
+          code: 'model_not_found',
+        },
+      },
+    };
+  }
   // Preserve the caller-selected model name for outward-facing identity and
   // response payloads, even when we normalize it to a canonical internal key.
   const displayModel = requestedModel || modelInfo?.name || config.defaultModel;
