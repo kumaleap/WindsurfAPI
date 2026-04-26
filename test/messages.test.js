@@ -123,4 +123,23 @@ describe('Anthropic messages request translation', () => {
       bashStub,
     );
   });
+
+  it('does not annotate line-numbered real body that contains stub keywords', () => {
+    const realBody = '1\t// previously cached value\n2\tconst x = 1;\n3\t// content was truncated last run\n4\tconst y = 2;';
+    assert.equal(
+      annotateRiskyReadToolResult(realBody, { toolName: 'Read' }),
+      realBody,
+    );
+    const cnBody = '1\t// 内容未变更：保留旧值\n2\tconst foo = 1;';
+    assert.equal(
+      annotateRiskyReadToolResult(cnBody, { toolName: 'Read' }),
+      cnBody,
+    );
+  });
+
+  it('annotates real Claude Code cached-unchanged stub', () => {
+    const cachedStub = 'File unchanged since last read. The content from the earlier Read tool_result in this conversation is still current.';
+    const out = annotateRiskyReadToolResult(cachedStub, { toolName: 'Read' });
+    assert.match(out, /does not prove the full file body/);
+  });
 });

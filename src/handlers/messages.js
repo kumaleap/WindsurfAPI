@@ -431,11 +431,17 @@ export function annotateRiskyReadToolResult(content, { toolName = '', isError = 
   const isOversizeNoContent = isError
     && /file content \([^)]+\) exceeds maximum allowed size/i.test(content)
     && /use offset and limit parameters/i.test(content);
-  const isCachedStub = (
+  // Claude Code Read tool emits real file bodies in "<lineno>\t<line>" form.
+  // Stub strings (cached/unchanged/truncated) never use that prefix, so the
+  // presence of a line-numbered line means we're looking at actual content
+  // and keyword heuristics would only false-positive on user code/comments.
+  const looksLikeRealBody = /^\s*\d+\t/m.test(content);
+  const isCachedStub = !looksLikeRealBody && (
     /(?:file )?(?:content )?(?:unchanged|cached)/i.test(content)
     || /(?:内容未变更|已缓存)/.test(content)
   ) && content.length < 2000;
-  const mentionsTruncation = /truncated|截断|丢失/.test(lower);
+  const mentionsTruncation = !looksLikeRealBody
+    && /truncated|截断|丢失/.test(lower);
   if (!isOversizeNoContent && !isCachedStub && !mentionsTruncation) return content;
 
   return `${content}\n\n[WindsurfAPI note: This Read result does not prove the full file body is available in the current conversation. If the task depends on full file contents, use Read with offset/limit or another content-bearing tool result before returning PASS.]`;
