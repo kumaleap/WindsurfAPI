@@ -746,9 +746,17 @@ function buildUsageBody(serverUsage, messages, completionText, thinkingText = ''
 async function waitForAccount(tried, signal, maxWaitMs = QUEUE_MAX_WAIT_MS, modelKey = null) {
   const deadline = Date.now() + maxWaitMs;
   let acct = getApiKey(tried, modelKey);
+  if (!acct && modelKey) {
+    const rl = isAllRateLimited(modelKey);
+    if (rl.allLimited) return null;
+  }
   while (!acct) {
     if (signal?.aborted) return null;
     if (Date.now() >= deadline) return null;
+    if (modelKey) {
+      const rl = isAllRateLimited(modelKey);
+      if (rl.allLimited) return null;
+    }
     await new Promise(r => setTimeout(r, QUEUE_RETRY_MS));
     acct = getApiKey(tried, modelKey);
   }
