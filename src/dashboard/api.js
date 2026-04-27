@@ -3,7 +3,7 @@
  * All routes are under /dashboard/api/*.
  */
 
-import { config, log } from '../config.js';
+import { config, log, hasDashboardPassword, isValidDashboardPassword } from '../config.js';
 import {
   getAccountList, getAccountCount, addAccountByKey, addAccountByToken,
   removeAccount, setAccountStatus, resetAccountErrors, updateAccountLabel,
@@ -29,6 +29,7 @@ function json(res, status, body) {
   const data = JSON.stringify(body);
   res.writeHead(status, {
     'Content-Type': 'application/json',
+    'Cache-Control': 'no-store',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, X-Dashboard-Password',
   });
@@ -36,7 +37,7 @@ function json(res, status, body) {
 }
 
 function hasDashboardAuth() {
-  return !!(config.dashboardPassword || config.apiKey);
+  return !!(hasDashboardPassword() || config.apiKey);
 }
 
 function isDashboardAccessEnabled() {
@@ -53,7 +54,7 @@ function checkAuth(req) {
       pw = qs.get('pwd') || '';
     } catch {}
   }
-  if (config.dashboardPassword) return pw === config.dashboardPassword;
+  if (hasDashboardPassword()) return isValidDashboardPassword(pw);
   if (config.apiKey) return pw === config.apiKey;
   return config.allowOpenDashboard;
 }
@@ -269,6 +270,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       } else {
         return json(res, 400, { error: 'Provide api_key or token' });
       }
+      await refreshCredits(account.id).catch(() => {});
       // Fire-and-forget probe so the UI gets tier info shortly after add
       probeAccount(account.id).catch(e => log.warn(`Auto-probe failed: ${e.message}`));
       return json(res, 200, {
@@ -282,6 +284,53 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   }
 
   // POST /accounts/probe-all — probe every active account
+  if (subpath === '/accounts/batch' && method === 'POST') {
+    try {
+      const entries = Array.isArray(body?.entries) ? body.entries : [];
+      if (!entries.length) return json(res, 400, { error: 'Provide entries[]' });
+      const results = [];
+      for (const entry of entries) {
+        const token = String(entry?.token || '').trim();
+        const apiKey = String(entry?.api_key || '').trim();
+        const label = String(entry?.label || '').trim();
+        if (!token && !apiKey) {
+          results.push({ success: false, error: 'Missing token/api_key' });
+          continue;
+        }
+        try {
+          const account = apiKey
+            ? addAccountByKey(apiKey, label)
+            : await addAccountByToken(token, label);
+          await refreshCredits(account.id).catch(() => {});
+          probeAccount(account.id).catch(e => log.warn(`Auto-probe failed: ${e.message}`));
+          results.push({
+            success: true,
+            id: account.id,
+            email: account.email,
+            method: account.method,
+            status: account.status,
+          });
+        } catch (err) {
+          results.push({
+            success: false,
+            input: token ? `${token.slice(0, 18)}...` : `${apiKey.slice(0, 18)}...`,
+            error: err.message,
+          });
+        }
+      }
+      return json(res, 200, {
+        success: true,
+        total: results.length,
+        successCount: results.filter(x => x.success).length,
+        failCount: results.filter(x => !x.success).length,
+        results,
+        ...getAccountCount(),
+      });
+    } catch (err) {
+      return json(res, 400, { error: err.message });
+    }
+  }
+
   if (subpath === '/accounts/probe-all' && method === 'POST') {
     const list = getAccountList().filter(a => a.status === 'active');
     const results = [];
@@ -442,7 +491,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       lsPort: config.lsPort,
       codeiumApiUrl: config.codeiumApiUrl,
       hasApiKey: !!config.apiKey,
-      hasDashboardPassword: !!config.dashboardPassword,
+      hasDashboardPassword: hasDashboardPassword(),
       allowOpenDashboard: !!config.allowOpenDashboard,
     });
   }

@@ -11,7 +11,7 @@
 import { randomUUID } from 'crypto';
 import { readFileSync, writeFileSync, existsSync, renameSync, unlinkSync } from 'fs';
 import { config, log } from './config.js';
-import { getEffectiveProxy } from './dashboard/proxy-config.js';
+import { getEffectiveProxy, getProxyConfig } from './dashboard/proxy-config.js';
 import { getTierModels, getModelKeysByEnum, MODELS } from './models.js';
 
 import { join } from 'path';
@@ -82,11 +82,30 @@ export function getAccountLogLabel(accountLike) {
   return id ? `${id}/${label}` : label;
 }
 
-let _saveInFlight = false;
-let _savePending = false;
+function getActiveModelRateLimitEntries(account, now = Date.now()) {
+  const source = account?._modelRateLimits && typeof account._modelRateLimits === 'object'
+    ? account._modelRateLimits
+    : account?.modelRateLimits && typeof account.modelRateLimits === 'object'
+      ? account.modelRateLimits
+      : {};
+  return Object.entries(source).filter(([, v]) => Number(v) > now);
+}
+
+function getActiveRateLimitState(account, now = Date.now()) {
+  const modelRateLimitEntries = getActiveModelRateLimitEntries(account, now);
+  const rateLimitedUntil = Number(account?.rateLimitedUntil || 0);
+  return {
+    rateLimitedUntil,
+    modelRateLimits: Object.fromEntries(modelRateLimitEntries),
+    isRateLimited: rateLimitedUntil > now || modelRateLimitEntries.length > 0,
+  };
+}
 
 function serializeAccounts() {
-  return accounts.map(a => ({
+  const now = Date.now();
+  return accounts.map(a => {
+    const rateLimitState = getActiveRateLimitState(a, now);
+    return ({
     id: a.id, email: a.email, apiKey: a.apiKey,
     apiServerUrl: a.apiServerUrl, method: a.method,
     status: a.status, addedAt: a.addedAt,
@@ -95,18 +114,24 @@ function serializeAccounts() {
     credits: a.credits || null,
     blockedModels: a.blockedModels || [],
     refreshToken: a.refreshToken || '',
+    authToken: a.authToken || '',
+    sessionToken: a.sessionToken || '',
+    authProvider: a.authProvider || '',
+    devinAccountId: a.devinAccountId || '',
+    devinPrimaryOrgId: a.devinPrimaryOrgId || '',
+    userId: a.userId || '',
+    teamId: a.teamId || '',
+    planName: a.planName || '',
+    rateLimitedUntil: rateLimitState.rateLimitedUntil,
+    modelRateLimits: rateLimitState.modelRateLimits,
     // From GetUserStatus — the authoritative tier/entitlement snapshot.
     userStatus: a.userStatus || null,
     userStatusLastFetched: a.userStatusLastFetched || 0,
-  }));
+  });
+  });
 }
 
 function saveAccounts() {
-  if (_saveInFlight) {
-    _savePending = true;
-    return;
-  }
-  _saveInFlight = true;
   const tempFile = ACCOUNTS_FILE + '.tmp';
   try {
     writeFileSync(tempFile, JSON.stringify(serializeAccounts(), null, 2));
@@ -114,12 +139,6 @@ function saveAccounts() {
   } catch (e) {
     log.error('Failed to save accounts:', e.message);
     try { unlinkSync(tempFile); } catch {}
-  } finally {
-    _saveInFlight = false;
-    if (_savePending) {
-      _savePending = false;
-      setImmediate(saveAccounts);
-    }
   }
 }
 
@@ -138,16 +157,30 @@ function loadAccounts() {
   try {
     if (!existsSync(ACCOUNTS_FILE)) return;
     const data = JSON.parse(readFileSync(ACCOUNTS_FILE, 'utf-8'));
+    let migrated = false;
     for (const a of data) {
       if (accounts.find(x => x.apiKey === a.apiKey)) continue;
-      accounts.push({
+      const account = {
         id: a.id || randomUUID().slice(0, 8),
         email: a.email, apiKey: a.apiKey,
         apiServerUrl: a.apiServerUrl || '',
         method: a.method || 'api_key',
+        authToken: a.authToken || '',
+        sessionToken: a.sessionToken || '',
+        authProvider: a.authProvider || '',
+        devinAccountId: a.devinAccountId || '',
+        devinPrimaryOrgId: a.devinPrimaryOrgId || '',
+        userId: a.userId || '',
+        teamId: a.teamId || '',
+        planName: a.planName || '',
         status: a.status || 'active',
         lastUsed: 0, errorCount: 0,
         refreshToken: a.refreshToken || '', expiresAt: 0, refreshTimer: null,
+        rateLimitedUntil: a.rateLimitedUntil || 0,
+        _modelRateLimits: {
+          ...(a.modelRateLimits || {}),
+          ...(a._modelRateLimits || {}),
+        },
         addedAt: a.addedAt || Date.now(),
         tier: a.tier || 'unknown',
         tierManual: !!a.tierManual,
@@ -157,9 +190,14 @@ function loadAccounts() {
         blockedModels: Array.isArray(a.blockedModels) ? a.blockedModels : [],
         userStatus: a.userStatus || null,
         userStatusLastFetched: a.userStatusLastFetched || 0,
-      });
+      };
+      const prevApiKey = account.apiKey;
+      normalizeImportedRuntimeCredential(account);
+      if (account.apiKey !== prevApiKey) migrated = true;
+      accounts.push(account);
     }
     if (data.length > 0) log.info(`Loaded ${data.length} account(s) from disk`);
+    if (migrated) saveAccounts();
   } catch (e) {
     log.error('Failed to load accounts:', e.message);
   }
@@ -178,7 +216,7 @@ async function fetchAndMergeModelCatalog() {
     const { getCascadeModelConfigs } = await import('./windsurf-api.js');
     const { mergeCloudModels } = await import('./models.js');
     const proxy = getEffectiveProxy(acct.id) || null;
-    const { configs } = await getCascadeModelConfigs(acct.apiKey, proxy);
+    const { configs } = await getCascadeModelConfigs(getRuntimeApiKeyForAccount(acct), proxy);
     const added = mergeCloudModels(configs);
     log.info(`Model catalog: ${configs.length} cloud models, ${added} new entries merged`);
   } catch (e) {
@@ -193,54 +231,39 @@ async function registerWithCodeium(idToken) {
   return result; // { apiKey, name, apiServerUrl }
 }
 
-// ─── Account management ───────────────────────────────────
-
-/**
- * Add account via API key.
- */
-export function addAccountByKey(apiKey, label = '') {
-  const existing = accounts.find(a => a.apiKey === apiKey);
-  if (existing) return existing;
-
-  const account = {
+function buildImportedAccount({
+  email,
+  apiKey,
+  method,
+  label = '',
+  authToken = '',
+  sessionToken = '',
+  authProvider = '',
+  devinAccountId = '',
+  devinPrimaryOrgId = '',
+  userId = '',
+  teamId = '',
+  planName = '',
+  name = '',
+} = {}) {
+  const runtimeApiKey = (
+    (authProvider === 'auth1' || authProvider === 'session' || method === 'auth1' || method === 'session')
+    && sessionToken
+  ) ? sessionToken : apiKey;
+  return {
     id: randomUUID().slice(0, 8),
-    email: label || `key-${apiKey.slice(0, 8)}`,
-    apiKey,
+    email: label || email || name || `token-${String(apiKey || '').slice(0, 8)}`,
+    apiKey: runtimeApiKey,
     apiServerUrl: '',
-    method: 'api_key',
-    status: 'active',
-    lastUsed: 0,
-    errorCount: 0,
-    refreshToken: '',
-    expiresAt: 0,
-    refreshTimer: null,
-    addedAt: Date.now(),
-    tier: 'unknown',
-    capabilities: {},
-    lastProbed: 0,
-    blockedModels: [],
-  };
-  account.credits = null;
-  accounts.push(account);
-  saveAccounts();
-  log.info(`Account added: ${getAccountLogLabel(account)} [api_key]`);
-  return account;
-}
-
-/**
- * Add account via auth token.
- */
-export async function addAccountByToken(token, label = '') {
-  const reg = await registerWithCodeium(token);
-  const existing = accounts.find(a => a.apiKey === reg.apiKey);
-  if (existing) return existing;
-
-  const account = {
-    id: randomUUID().slice(0, 8),
-    email: label || reg.name || `token-${reg.apiKey.slice(0, 8)}`,
-    apiKey: reg.apiKey,
-    apiServerUrl: reg.apiServerUrl || '',
-    method: 'token',
+    method,
+    authToken,
+    sessionToken,
+    authProvider,
+    devinAccountId,
+    devinPrimaryOrgId,
+    userId,
+    teamId,
+    planName,
     status: 'active',
     lastUsed: 0,
     errorCount: 0,
@@ -254,6 +277,122 @@ export async function addAccountByToken(token, label = '') {
     blockedModels: [],
     credits: null,
   };
+}
+
+function normalizeImportedRuntimeCredential(account) {
+  if (!account) return account;
+  const importedAuth = account.authProvider === 'auth1'
+    || account.authProvider === 'session'
+    || account.method === 'auth1'
+    || account.method === 'session';
+  if (importedAuth && account.sessionToken && account.apiKey !== account.sessionToken) {
+    account.apiKey = account.sessionToken;
+  }
+  return account;
+}
+
+export function getRuntimeApiKeyForAccount(account) {
+  if (!account) return '';
+  const importedAuth = account.authProvider === 'auth1'
+    || account.authProvider === 'session'
+    || account.method === 'auth1'
+    || account.method === 'session';
+  if (importedAuth && account.sessionToken) return account.sessionToken;
+  return account.apiKey || '';
+}
+
+async function addAccountByResolvedAuth(resolved, label = '') {
+  if (!resolved?.apiKey) {
+    throw new Error('Resolved auth string did not return an apiKey');
+  }
+  const existing = accounts.find(a =>
+    a.apiKey === resolved.apiKey
+    || (resolved.sessionToken && a.sessionToken === resolved.sessionToken)
+    || (resolved.authToken && a.authToken === resolved.authToken)
+  );
+  if (existing) {
+    existing.email = label || resolved.email || existing.email;
+    existing.apiKey = resolved.apiKey || existing.apiKey;
+    existing.authToken = resolved.authToken || existing.authToken || '';
+    existing.sessionToken = resolved.sessionToken || existing.sessionToken || '';
+    existing.authProvider = resolved.provider || existing.authProvider || '';
+    existing.devinAccountId = resolved.devinAccountId || existing.devinAccountId || '';
+    existing.devinPrimaryOrgId = resolved.devinPrimaryOrgId || existing.devinPrimaryOrgId || '';
+    existing.userId = resolved.userId || existing.userId || '';
+    existing.teamId = resolved.teamId || existing.teamId || '';
+    existing.planName = resolved.planName || existing.planName || '';
+    existing.method = existing.method || resolved.provider || 'auth_string';
+    normalizeImportedRuntimeCredential(existing);
+    saveAccounts();
+    return existing;
+  }
+
+  const account = buildImportedAccount({
+    email: resolved.email,
+    apiKey: resolved.apiKey,
+    method: resolved.provider || 'auth_string',
+    label,
+    authToken: resolved.authToken,
+    sessionToken: resolved.sessionToken,
+    authProvider: resolved.provider || '',
+    devinAccountId: resolved.devinAccountId || '',
+    devinPrimaryOrgId: resolved.devinPrimaryOrgId || '',
+    userId: resolved.userId || '',
+    teamId: resolved.teamId || '',
+    planName: resolved.planName || '',
+    name: resolved.name || '',
+  });
+  normalizeImportedRuntimeCredential(account);
+  accounts.push(account);
+  saveAccounts();
+  log.info(`Account added: ${getAccountLogLabel(account)} [${account.method}]`);
+  return account;
+}
+
+// ─── Account management ───────────────────────────────────
+
+/**
+ * Add account via API key.
+ */
+export function addAccountByKey(apiKey, label = '') {
+  const existing = accounts.find(a => a.apiKey === apiKey);
+  if (existing) return existing;
+
+  const account = buildImportedAccount({
+    email: `key-${apiKey.slice(0, 8)}`,
+    apiKey,
+    method: 'api_key',
+    label,
+  });
+  accounts.push(account);
+  saveAccounts();
+  log.info(`Account added: ${getAccountLogLabel(account)} [api_key]`);
+  return account;
+}
+
+/**
+ * Add account via auth token.
+ */
+export async function addAccountByToken(token, label = '') {
+  const trimmed = String(token || '').trim();
+  if (trimmed.startsWith('auth1_') || trimmed.startsWith('devin-session-token$')) {
+    const { resolveWindsurfAuthToken } = await import('./windsurf-auth.js');
+    const proxy = getProxyConfig().global || null;
+    const resolved = await resolveWindsurfAuthToken(trimmed, { proxy });
+    return addAccountByResolvedAuth(resolved, label);
+  }
+
+  const reg = await registerWithCodeium(token);
+  const existing = accounts.find(a => a.apiKey === reg.apiKey);
+  if (existing) return existing;
+
+  const account = buildImportedAccount({
+    email: reg.name || `token-${reg.apiKey.slice(0, 8)}`,
+    apiKey: reg.apiKey,
+    method: 'token',
+    label,
+  });
+  account.apiServerUrl = reg.apiServerUrl || '';
   accounts.push(account);
   saveAccounts();
   log.info(`Account added: ${getAccountLogLabel(account)} [token] server=${account.apiServerUrl}`);
@@ -439,6 +578,7 @@ export function getApiKey(excludeKeys = [], modelKey = null) {
   account.lastUsed = now;
   return {
     id: account.id, email: account.email, apiKey: account.apiKey,
+    runtimeApiKey: getRuntimeApiKeyForAccount(account),
     apiServerUrl: account.apiServerUrl || '',
     proxy: getEffectiveProxy(account.id) || null,
   };
@@ -467,6 +607,7 @@ export function acquireAccountByKey(apiKey, modelKey = null) {
   a.lastUsed = now;
   return {
     id: a.id, email: a.email, apiKey: a.apiKey,
+    runtimeApiKey: getRuntimeApiKeyForAccount(a),
     apiServerUrl: a.apiServerUrl || '',
     proxy: getEffectiveProxy(a.id) || null,
   };
@@ -501,9 +642,10 @@ export async function ensureLsForAccount(accountId) {
     // Pre-warm the Cascade workspace init so the first real request on this
     // account/LS pair doesn't pay the panel bootstrap cost. Fire-and-forget —
     // chat requests still await the same Promise if it hasn't finished yet.
-    if (ls && account?.apiKey) {
+    const runtimeApiKey = getRuntimeApiKeyForAccount(account);
+    if (ls && runtimeApiKey) {
       const { WindsurfClient } = await import('./client.js');
-      const client = new WindsurfClient(account.apiKey, ls.port, ls.csrfToken);
+      const client = new WindsurfClient(runtimeApiKey, ls.port, ls.csrfToken);
       client.warmupCascade().catch(e => log.warn(`Cascade warmup failed: ${e.message}`));
     }
   } catch (e) {
@@ -520,15 +662,19 @@ export async function ensureLsForAccount(accountId) {
 export function markRateLimited(apiKey, durationMs = 5 * 60 * 1000, modelKey = null) {
   const account = accounts.find(a => a.apiKey === apiKey);
   if (!account) return;
-  const until = Date.now() + durationMs;
+  const now = Date.now();
+  const until = now + Math.max(1000, Number(durationMs) || 0);
   if (modelKey) {
     if (!account._modelRateLimits) account._modelRateLimits = {};
-    account._modelRateLimits[modelKey] = until;
-    log.warn(`Account ${getAccountLogLabel(account)} rate-limited on ${modelKey} for ${Math.round(durationMs / 60000)} min`);
+    account._modelRateLimits[modelKey] = Math.max(account._modelRateLimits[modelKey] || 0, until);
+    account.modelRateLimits = { ...(account.modelRateLimits || {}), [modelKey]: account._modelRateLimits[modelKey] };
+    log.warn(`Account ${getAccountLogLabel(account)} rate-limited on ${modelKey} for ${Math.round((account._modelRateLimits[modelKey] - now) / 60000)} min`);
   } else {
-    account.rateLimitedUntil = until;
-    log.warn(`Account ${getAccountLogLabel(account)} rate-limited (all models) for ${Math.round(durationMs / 60000)} min`);
+    account.rateLimitedUntil = Math.max(account.rateLimitedUntil || 0, until);
+    log.warn(`Account ${getAccountLogLabel(account)} rate-limited (all models) for ${Math.round((account.rateLimitedUntil - now) / 60000)} min`);
   }
+  account.rateLimited = true;
+  saveAccounts();
 }
 
 export function cooldownAccountModel(apiKey, modelKey, durationMs = 30 * 1000, reason = 'transient_upstream') {
@@ -550,11 +696,9 @@ function isRateLimitedForModel(account, modelKey, now) {
   // Global rate limit
   if (account.rateLimitedUntil && account.rateLimitedUntil > now) return true;
   // Per-model rate limit
-  if (modelKey && account._modelRateLimits) {
-    const until = account._modelRateLimits[modelKey];
+  if (modelKey) {
+    const until = getActiveRateLimitState(account, now).modelRateLimits[modelKey];
     if (until && until > now) return true;
-    // Clean up expired entries
-    if (until && until <= now) delete account._modelRateLimits[modelKey];
   }
   return false;
 }
@@ -607,6 +751,7 @@ export function reportInternalError(apiKey) {
   if (account.internalErrorStreak >= 2) {
     account.rateLimitedUntil = Date.now() + 5 * 60 * 1000;
     log.warn(`Account ${getAccountLogLabel(account)} quarantined 5min after ${account.internalErrorStreak} consecutive upstream internal errors`);
+    saveAccounts();
   }
 }
 
@@ -624,14 +769,15 @@ export function isAllRateLimited(modelKey) {
   for (const a of accounts) {
     if (a.status !== 'active') continue;
     if (modelKey && !isModelAllowedForAccount(a, modelKey)) continue;
+    const rateLimitState = getActiveRateLimitState(a, now);
     anyEligible = true;
     if (!isRateLimitedForModel(a, modelKey, now)) return { allLimited: false };
     // Track the soonest expiry across both global and per-model limits
-    if (a.rateLimitedUntil && a.rateLimitedUntil > now) {
-      soonestExpiry = Math.min(soonestExpiry, a.rateLimitedUntil);
+    if (rateLimitState.rateLimitedUntil > now) {
+      soonestExpiry = Math.min(soonestExpiry, rateLimitState.rateLimitedUntil);
     }
-    if (modelKey && a._modelRateLimits?.[modelKey] > now) {
-      soonestExpiry = Math.min(soonestExpiry, a._modelRateLimits[modelKey]);
+    if (modelKey && rateLimitState.modelRateLimits[modelKey] > now) {
+      soonestExpiry = Math.min(soonestExpiry, rateLimitState.modelRateLimits[modelKey]);
     }
   }
   if (!anyEligible) return { allLimited: false };
@@ -646,8 +792,10 @@ export function isAuthenticated() {
 export function getAccountList() {
   const now = Date.now();
   return accounts.map(a => {
+    const runtimeApiKey = getRuntimeApiKeyForAccount(a);
     const rpmLimit = rpmLimitFor(a);
     const rpmUsed = pruneRpmHistory(a, now);
+    const rateLimitState = getActiveRateLimitState(a, now);
     return {
       id: a.id,
       email: a.email,
@@ -656,16 +804,16 @@ export function getAccountList() {
       errorCount: a.errorCount,
       lastUsed: a.lastUsed ? new Date(a.lastUsed).toISOString() : null,
       addedAt: new Date(a.addedAt).toISOString(),
-      keyPrefix: a.apiKey.slice(0, 8) + '...',
-      apiKey: a.apiKey,
+      keyPrefix: runtimeApiKey.slice(0, 8) + '...',
+      apiKey: runtimeApiKey,
+      authProvider: a.authProvider || '',
+      planName: a.planName || '',
       tier: a.tier || 'unknown',
       capabilities: a.capabilities || {},
       lastProbed: a.lastProbed || 0,
-      rateLimitedUntil: a.rateLimitedUntil || 0,
-      rateLimited: !!(a.rateLimitedUntil && a.rateLimitedUntil > now),
-      modelRateLimits: a._modelRateLimits ? Object.fromEntries(
-        Object.entries(a._modelRateLimits).filter(([, v]) => v > now)
-      ) : {},
+      rateLimitedUntil: rateLimitState.rateLimitedUntil,
+      rateLimited: rateLimitState.isRateLimited,
+      modelRateLimits: rateLimitState.modelRateLimits,
       modelCooldowns: a._modelCooldowns ? Object.fromEntries(
         Object.entries(a._modelCooldowns)
           .filter(([, v]) => v?.until > now)
@@ -694,7 +842,7 @@ export async function refreshCredits(id) {
   try {
     const { getUserStatus } = await import('./windsurf-api.js');
     const proxy = getEffectiveProxy(account.id) || null;
-    const status = await getUserStatus(account.apiKey, proxy);
+    const status = await getUserStatus(getRuntimeApiKeyForAccount(account), proxy);
     // Drop the huge raw payload before persisting — keep it only in memory for
     // downstream callers (e.g. model catalog cache) to inspect once.
     const { raw, ...persist } = status;
@@ -794,7 +942,7 @@ export async function fetchUserStatus(id) {
   const ls = getLsFor(proxy);
   if (!ls) { log.warn(`No LS for GetUserStatus on ${account.id}`); return null; }
 
-  const client = new WindsurfClient(account.apiKey, ls.port, ls.csrfToken);
+  const client = new WindsurfClient(getRuntimeApiKeyForAccount(account), ls.port, ls.csrfToken);
   let status;
   try {
     status = await client.getUserStatus();
@@ -920,7 +1068,7 @@ export async function probeAccount(id) {
       const info = getModelInfo(modelKey);
       if (!info) continue;
       const useCascade = !!info.modelUid;
-      const client = new WindsurfClient(account.apiKey, port, csrf);
+      const client = new WindsurfClient(getRuntimeApiKeyForAccount(account), port, csrf);
       try {
         if (useCascade) {
           await client.cascadeChat([{ role: 'user', content: 'hi' }], info.enumValue, info.modelUid);

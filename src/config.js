@@ -28,6 +28,19 @@ function loadEnv() {
 
 loadEnv();
 
+function parseEnvList(raw = '') {
+  return String(raw)
+    .split(/[\r\n,]+/)
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+const dashboardPassword = process.env.DASHBOARD_PASSWORD || '';
+const dashboardPasswords = [...new Set([
+  dashboardPassword,
+  ...parseEnvList(process.env.DASHBOARD_PASSWORDS || ''),
+].filter(Boolean))];
+
 export const config = {
   port: parseInt(process.env.PORT || '3003', 10),
   apiKey: process.env.API_KEY || '',
@@ -47,9 +60,18 @@ export const config = {
   lsPort: parseInt(process.env.LS_PORT || '42100', 10),
 
   // Dashboard
-  dashboardPassword: process.env.DASHBOARD_PASSWORD || '',
+  dashboardPassword,
+  dashboardPasswords,
   allowOpenDashboard: /^(1|true|yes|on)$/i.test(process.env.ALLOW_OPEN_DASHBOARD || ''),
 };
+
+export function hasDashboardPassword() {
+  return config.dashboardPasswords.length > 0;
+}
+
+export function isValidDashboardPassword(candidate) {
+  return !!candidate && config.dashboardPasswords.includes(candidate);
+}
 
 const levels = { debug: 0, info: 1, warn: 2, error: 3 };
 const currentLevel = levels[config.logLevel] ?? 1;

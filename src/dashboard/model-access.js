@@ -14,31 +14,44 @@ const _config = {
   list: [],          // model IDs in the list
 };
 
+function normalizeConfig() {
+  // An empty allowlist is almost always an operator mistake and effectively
+  // bricks every upstream model with 403s. Treat it as unrestricted mode.
+  if (_config.mode === 'allowlist' && (!_config.list || _config.list.length === 0)) {
+    _config.mode = 'all';
+  }
+}
+
 // Load
 try {
   if (existsSync(ACCESS_FILE)) {
     Object.assign(_config, JSON.parse(readFileSync(ACCESS_FILE, 'utf-8')));
+    normalizeConfig();
   }
 } catch {}
 
 function save() {
   try {
+    normalizeConfig();
     writeFileSync(ACCESS_FILE, JSON.stringify(_config, null, 2));
   } catch {}
 }
 
 export function getModelAccessConfig() {
+  normalizeConfig();
   return { ..._config };
 }
 
 export function setModelAccessMode(mode) {
   if (!['all', 'allowlist', 'blocklist'].includes(mode)) return;
   _config.mode = mode;
+  normalizeConfig();
   save();
 }
 
 export function setModelAccessList(list) {
   _config.list = Array.isArray(list) ? list : [];
+  normalizeConfig();
   save();
 }
 
@@ -59,6 +72,7 @@ export function removeModelFromList(modelId) {
  * @returns {{ allowed: boolean, reason?: string }}
  */
 export function isModelAllowed(modelId) {
+  normalizeConfig();
   if (_config.mode === 'all') return { allowed: true };
 
   if (_config.mode === 'allowlist') {

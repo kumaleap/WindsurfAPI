@@ -23,7 +23,7 @@ import { handleMessages, handleCountTokens } from './handlers/messages.js';
 import { handleModels } from './handlers/models.js';
 import { handleResponses } from './handlers/responses.js';
 import { handleDashboardApi } from './dashboard/api.js';
-import { config, log } from './config.js';
+import { config, log, hasDashboardPassword } from './config.js';
 import { VERSION_INFO } from './version-info.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -76,7 +76,7 @@ function prepareStreamResponse(req, res) {
 }
 
 function isDashboardAccessEnabled() {
-  return !!(config.dashboardPassword || config.apiKey || config.allowOpenDashboard);
+  return !!(hasDashboardPassword() || config.apiKey || config.allowOpenDashboard);
 }
 
 function writeDashboardDisabledPage(res) {
@@ -130,7 +130,10 @@ async function route(req, res) {
     if (!isDashboardAccessEnabled()) return writeDashboardDisabledPage(res);
     try {
       const html = readFileSync(join(__dirname, 'dashboard', 'index.html'));
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store',
+      });
       return res.end(html);
     } catch {
       return json(res, 500, { error: 'Dashboard not found' });

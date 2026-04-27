@@ -3,7 +3,7 @@ import './dashboard/logger.js';
 import { initAuth, isAuthenticated, saveAccountsSync } from './auth.js';
 import { startLanguageServer, waitForReady, isLanguageServerRunning, stopLanguageServer } from './langserver.js';
 import { startServer } from './server.js';
-import { config, log } from './config.js';
+import { config, log, hasDashboardPassword } from './config.js';
 import { VERSION_INFO } from './version-info.js';
 import { existsSync } from 'fs';
 import { execSync } from 'child_process';
@@ -65,7 +65,7 @@ async function main() {
   if (!config.apiKey) {
     log.warn('API_KEY is empty — API endpoints are publicly accessible.');
   }
-  if (!config.dashboardPassword && !config.apiKey) {
+  if (!hasDashboardPassword() && !config.apiKey) {
     if (config.allowOpenDashboard) {
       log.warn('Dashboard auth is disabled — /dashboard and /dashboard/api are publicly accessible because ALLOW_OPEN_DASHBOARD=true.');
     } else {
