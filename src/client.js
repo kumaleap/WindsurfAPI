@@ -594,7 +594,11 @@ export class WindsurfClient {
         // that long to emit the first token from Cascade. Was 90s which
         // still tripped on very long prompts (issue #5).
         const coldStallMs = activeToolCallMode
-          ? Math.min(16_000, 8_000 + Math.floor(inputChars / 12_000) * 1_000)
+          // Tool-mode requests frequently carry tens of KB of context plus a
+          // large tool preamble. Let slow planners breathe longer before we
+          // treat them as overloaded; 11-13s was too aggressive for real
+          // Claude Code sessions around 40-65KB and caused false 502s.
+          ? Math.min(28_000, 12_000 + Math.floor(inputChars / 10_000) * 2_000)
           : Math.min(maxWait, 30_000 + Math.floor(inputChars / 1500) * 5_000);
         if (elapsed > coldStallMs && sawActive && !sawText && seenToolCallIds.size === 0) {
           log.warn(`Cascade cold stall: ${elapsed}ms active without any text or tool call (threshold=${coldStallMs}ms, inputChars=${inputChars}, toolMode=${activeToolCallMode}), bailing`);
