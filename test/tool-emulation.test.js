@@ -85,6 +85,22 @@ describe('ToolCallStreamParser', () => {
     const allCalls = [...r.toolCalls, ...flush.toolCalls];
     assert.equal(allCalls.length, 2);
   });
+
+  it('tracks parser idleness across partial tool-call markers', () => {
+    const parser = new ToolCallStreamParser();
+    assert.equal(parser.isIdle(), true);
+
+    const r1 = parser.feed('prefix <tool_ca');
+    assert.equal(r1.text, 'prefix ');
+    assert.equal(parser.isIdle(), false);
+
+    const r2 = parser.feed('ll>{"name":"Read","arguments":{"path":"x"}}</tool_call>');
+    assert.equal(r2.toolCalls.length, 1);
+
+    const flush = parser.flush();
+    assert.equal(flush.toolCalls.length, 0);
+    assert.equal(parser.isIdle(), true);
+  });
 });
 
 describe('parseToolCallsFromText', () => {

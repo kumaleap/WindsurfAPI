@@ -397,6 +397,14 @@ export class ToolCallStreamParser {
     this._totalSeen = 0;
   }
 
+  isIdle() {
+    return !this.buffer
+      && !this.inToolCall
+      && !this.inToolResult
+      && !this.inToolCode
+      && !this.inBareCall;
+  }
+
   _findClosingBrace() {
     let depth = 0;
     let inStr = false;
