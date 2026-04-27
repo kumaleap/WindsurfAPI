@@ -493,10 +493,10 @@ function shouldRetryBeforeVisibleOutput(err) {
 function shouldRetryNonStreamResult(result) {
   if (!result) return false;
   if (result.status === 429) return true;
-  if (result.status >= 500) return true;
   const message = result.body?.error?.message || '';
   const type = result.body?.error?.type;
   if (isOutputLimitMessage(message)) return false;
+  if (type === 'ls_unavailable') return true;
   if (isPermanentModelPermissionMessage(message)) return true;
   if (type === 'upstream_error' && isRetryableUpstreamMessage(message)) return true;
   return false;
@@ -1347,9 +1347,11 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
         } },
       };
     }
+    const message = sanitizeText(err.message);
+    const isPermanentModel = failure.isPermanentModel || isOutputLimitMessage(message);
     return {
-      status: err.isModelError ? 403 : 502,
-      body: { error: { message: sanitizeText(err.message), type: err.isModelError ? 'model_not_available' : 'upstream_error' } },
+      status: isPermanentModel ? 403 : 502,
+      body: { error: { message, type: isPermanentModel ? 'model_not_available' : 'upstream_error' } },
     };
   }
 }
