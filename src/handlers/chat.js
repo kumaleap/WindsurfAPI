@@ -666,7 +666,8 @@ function shouldUseLocalResponseCache(body, messages, emulateTools) {
 }
 
 export function applyToolPreambleBudget(tools, toolChoice, opts = {}) {
-  const full = buildToolPreambleForProto(tools || [], toolChoice);
+  const environment = typeof opts.environment === 'string' ? opts.environment : '';
+  const full = buildToolPreambleForProto(tools || [], toolChoice, environment);
   const softBytes = opts.softBytes ?? parseInt(process.env.TOOL_PREAMBLE_SOFT_BYTES || '24000', 10);
   const hardBytes = opts.hardBytes ?? parseInt(process.env.TOOL_PREAMBLE_HARD_BYTES || '48000', 10);
   if (!full) {
@@ -679,7 +680,7 @@ export function applyToolPreambleBudget(tools, toolChoice, opts = {}) {
   let compacted = false;
 
   if (fullBytes > softBytes) {
-    preamble = buildCompactToolPreambleForProto(tools || [], toolChoice);
+    preamble = buildCompactToolPreambleForProto(tools || [], toolChoice, environment);
     finalBytes = Buffer.byteLength(preamble, 'utf8');
     compacted = true;
   }

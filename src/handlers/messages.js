@@ -96,6 +96,17 @@ function resolveAnthropicModel(body) {
   return resolveThinkingModel(requested) || requested;
 }
 
+function mapAnthropicToolChoice(toolChoice) {
+  if (!toolChoice || typeof toolChoice !== 'object') return toolChoice;
+  if (toolChoice.type === 'auto') return 'auto';
+  if (toolChoice.type === 'any') return 'required';
+  if (toolChoice.type === 'none') return 'none';
+  if (toolChoice.type === 'tool' && toolChoice.name) {
+    return { type: 'function', function: { name: toolChoice.name } };
+  }
+  return toolChoice;
+}
+
 function buildThinkingBudgetSystemMessage(thinkingConfig) {
   if (!thinkingConfig?.enabled || !thinkingConfig.budgetTokens) return null;
   return [

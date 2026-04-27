@@ -21,6 +21,37 @@
  * boundary.
  */
 
+import { fileURLToPath } from 'url';
+
+function escapeRegex(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildRepoRootPattern() {
+  try {
+    const thisFile = fileURLToPath(import.meta.url);
+    const repoRoot = thisFile.replace(/[/\\]src[/\\]sanitize\.js$/, '');
+    const parts = repoRoot.split(/[\\/]+/).filter(Boolean).map(escapeRegex);
+    if (!parts.length) return null;
+    const prefix = repoRoot.startsWith('/') ? '/' : '';
+    return new RegExp(prefix + parts.join('[/\\\\]') + String.raw`(?:[/\\\\][^\s"'` + '`' + String.raw`<>)}\],*;]*)?`, 'g');
+  } catch {
+    return null;
+  }
+}
+
+const REPO_ROOT_PATTERN = buildRepoRootPattern();
+const REPO_ROOT_LITERALS = (() => {
+  try {
+    const thisFile = fileURLToPath(import.meta.url);
+    const repoRoot = thisFile.replace(/[/\\]src[/\\]sanitize\.js$/, '');
+    const variants = new Set([repoRoot, repoRoot.replace(/\\/g, '/')].filter(Boolean));
+    return [...variants];
+  } catch {
+    return [];
+  }
+})();
+
 // Literal prefixes that must never appear in output. First-match wins in the
 // order given. The workspace literal is replaced with "." so text like
 // "/tmp/windsurf-workspace/foo.py" becomes "./foo.py" (still readable). The
@@ -30,12 +61,14 @@ const PATTERNS = [
   [/\/opt\/windsurf(?:\/[^\s"'`<>)}\],*;]*)?/g, '[internal]'],
   [/\/root\/WindsurfAPI(?:\/[^\s"'`<>)}\],*;]*)?/g, '[internal]'],
 ];
+if (REPO_ROOT_PATTERN) PATTERNS.push([REPO_ROOT_PATTERN, '[internal]']);
 
 // Bare literals (no path tail) used by the streaming cut-point finder.
 const SENSITIVE_LITERALS = [
   '/tmp/windsurf-workspace',
   '/opt/windsurf',
   '/root/WindsurfAPI',
+  ...REPO_ROOT_LITERALS,
 ];
 
 // Character class that counts as part of a path body. Mirrors the PATTERNS

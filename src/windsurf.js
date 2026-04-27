@@ -361,23 +361,23 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault } 
   // ── System prompt section overrides ──────────────────────────────────
   //
   // CascadeConversationalPlannerConfig section override fields:
-  //   field 10: tool_calling_section
   //   field 12: additional_instructions_section
   //
-  // Key insight: NO_TOOL mode (planner_mode=3) appears to SUPPRESS the
+  // Key insight: NO_TOOL mode (planner_mode=3) SUPPRESSES the
   // tool_calling_section entirely — SectionOverrideConfig on field 10 is
-  // injected but never rendered to the model.  Verified 2026-04-12: even
-  // with OVERRIDE mode on field 10, the model says "I don't have access
+  // injected but never rendered to the model. Verified 2026-04-12: even
+  // with OVERRIDE mode on field 10, the model said "I don't have access
   // to tools" and ignores the emulated definitions.
   //
-  // Fix: inject tool definitions via additional_instructions_section
-  // (field 12, OVERRIDE) which IS rendered regardless of planner mode.
-  // Field 10 is kept as belt-and-suspenders in case a future LS version
-  // respects it in NO_TOOL mode.
+  // We deliver tool definitions exclusively via
+  // additional_instructions_section (field 12, OVERRIDE) which IS
+  // rendered regardless of planner mode. Writing the same full schema blob
+  // to field 10 doubles proto payload size for large tool catalogs and
+  // pushes cloud requests into panel-state-missing retries.
   if (toolPreamble) {
     // ── Client provided OpenAI tools[] ──
-    // Primary delivery: additional_instructions_section (field 12, OVERRIDE).
-    // This section is always rendered, even in NO_TOOL planner mode.
+    // Primary (and only) delivery: additional_instructions_section
+    // (field 12, OVERRIDE). Always rendered, even in NO_TOOL planner mode.
     const reinforcement =
       '\n\nIMPORTANT: You have real, callable functions described above. ' +
       'When the user\'s request can be answered by calling a function, you MUST emit ' +
@@ -388,14 +388,6 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault } 
       writeStringField(2, toolPreamble + reinforcement),
     ]);
     convParts.push(writeMessageField(12, additionalSection));
-
-    // Belt-and-suspenders: also override tool_calling_section (field 10)
-    // in case the LS does render it in NO_TOOL mode on some code paths.
-    const toolSection = Buffer.concat([
-      writeVarintField(1, 1),             // SECTION_OVERRIDE_MODE_OVERRIDE
-      writeStringField(2, toolPreamble),
-    ]);
-    convParts.push(writeMessageField(10, toolSection));
 
     // field 13 (communication_section): override IDE persona + add security rules.
     // Even with tools[], the model must not leak server environment info.

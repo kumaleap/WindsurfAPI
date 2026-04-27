@@ -64,7 +64,7 @@ function json(res, status, body) {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-API-Key',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-API-Key, x-api-key, anthropic-version',
   });
   res.end(data);
 }
@@ -110,7 +110,14 @@ async function route(req, res) {
   const { method } = req;
   const path = req.url.split('?')[0];
 
-  if (method === 'OPTIONS') return json(res, 204, '');
+  if (method === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-API-Key, x-api-key, anthropic-version',
+    });
+    return res.end();
+  }
   if (path === '/health') {
     return json(res, 200, {
       status: 'ok',
