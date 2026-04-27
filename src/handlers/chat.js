@@ -756,6 +756,7 @@ async function waitForAccount(tried, signal, maxWaitMs = QUEUE_MAX_WAIT_MS, mode
 }
 
 export async function handleChatCompletions(body) {
+  const reqId = newRequestId();
   const {
     model: reqModel,
     stream = false,
@@ -1174,6 +1175,7 @@ export async function handleChatCompletions(body) {
 
 async function nonStreamResponse(client, id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, apiKey, ckey, poolCtx, emulateTools, activeToolCallMode, toolPreamble, wantJson = false) {
   const startTime = Date.now();
+  const inputChars = estimateMessageChars(messages);
   try {
     let allText = '';
     let allThinking = '';
@@ -1328,11 +1330,11 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
     // LS crash on oversized payload — gRPC surfaces this as "pending stream
     // has been canceled" within a second. Give the user an actionable hint.
     const isStreamCanceled = /pending stream has been canceled|panel state|ECONNRESET/i.test(err.message);
-    if (isStreamCanceled && _msgChars > 500_000) {
+    if (isStreamCanceled && inputChars > 500_000) {
       return {
         status: 413,
         body: { error: {
-          message: `请求过大（${Math.round(_msgChars / 1024)}KB 输入）导致语言服务器中断。请尝试：1) 分块发送；2) 先用摘要/summarization 预处理 PDF；3) 减少历史轮数`,
+          message: `请求过大（${Math.round(inputChars / 1024)}KB 输入）导致语言服务器中断。请尝试：1) 分块发送；2) 先用摘要/summarization 预处理 PDF；3) 减少历史轮数`,
           type: 'payload_too_large',
         } },
       };
