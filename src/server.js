@@ -79,6 +79,11 @@ function isDashboardAccessEnabled() {
   return !!(hasDashboardPassword() || config.apiKey || config.allowOpenDashboard);
 }
 
+function isSensitivePath(path) {
+  return /(?:^|\/)\.(?:env|git|svn|hg)(?:\/|$)/i.test(path)
+    || /(?:^|\/)(?:accounts|stats|runtime-config|proxy-config|model-access)\.json$/i.test(path);
+}
+
 function writeDashboardDisabledPage(res) {
   const html = `<!doctype html>
 <html lang="zh-CN">
@@ -124,6 +129,10 @@ async function route(req, res) {
       version: VERSION_INFO.version,
       uptime: Math.round(process.uptime()),
     });
+  }
+
+  if (isSensitivePath(path)) {
+    return json(res, 404, { error: { message: `${method} ${path} not found`, type: 'not_found' } });
   }
 
   // ─── Dashboard ─────────────────────────────────────────

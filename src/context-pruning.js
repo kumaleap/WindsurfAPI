@@ -16,6 +16,14 @@ function contentTextChars(content) {
   return chars;
 }
 
+function envInt(name, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return fallback;
+  const parsed = parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
+}
+
 function contentToPreview(content, maxChars = 220) {
   let text = '';
   if (typeof content === 'string') {
@@ -236,9 +244,15 @@ export function compactOpenAIMessageHistory(messages, options = {}) {
 }
 
 export function getOversizedContextReason(summary, options = {}) {
-  const maxInputChars = Number.isFinite(options.maxInputChars) ? options.maxInputChars : 320_000;
-  const maxMessages = Number.isFinite(options.maxMessages) ? options.maxMessages : 240;
-  const maxToolResultChars = Number.isFinite(options.maxToolResultChars) ? options.maxToolResultChars : 120_000;
+  const maxInputChars = Number.isFinite(options.maxInputChars)
+    ? options.maxInputChars
+    : envInt('MAX_CONTEXT_CHARS', 180_000, { min: 8_000 });
+  const maxMessages = Number.isFinite(options.maxMessages)
+    ? options.maxMessages
+    : envInt('MAX_CONTEXT_MESSAGES', 200, { min: 8 });
+  const maxToolResultChars = Number.isFinite(options.maxToolResultChars)
+    ? options.maxToolResultChars
+    : envInt('MAX_TOOL_RESULT_CHARS', 64_000, { min: 2_000 });
   if (!summary) return null;
   if (summary.inputChars > maxInputChars) return 'input_chars';
   if (summary.messages > maxMessages) return 'message_count';

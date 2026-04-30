@@ -5,7 +5,7 @@
 
 import { randomUUID } from 'crypto';
 import { WindsurfClient } from '../client.js';
-import { getApiKey, acquireAccountByKey, reportError, reportSuccess, markRateLimited, reportInternalError, updateCapability, getAccountList, isAllRateLimited, cooldownAccountModel, getAccountLogLabel } from '../auth.js';
+import { getApiKey, acquireAccountByKey, releaseAccount, reportError, reportSuccess, markRateLimited, reportInternalError, updateCapability, getAccountList, isAllRateLimited, cooldownAccountModel, getAccountLogLabel } from '../auth.js';
 import { resolveModel, getModelInfo } from '../models.js';
 import { getLsFor, ensureLs } from '../langserver.js';
 import { config, log } from '../config.js';
@@ -61,6 +61,21 @@ const SHORT_TOOL_STOP_RETRY_DISABLE_INPUT_CHARS = 30_000;
 const SHORT_TOOL_STOP_RETRY_DISABLE_TOOL_RESULT_CHARS = 16_000;
 const SHORT_TOOL_STOP_RETRY_SINGLE_INPUT_CHARS = 10_000;
 const SHORT_TOOL_STOP_RETRY_SINGLE_TOOL_RESULT_CHARS = 6_000;
+
+function envInt(name, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return fallback;
+  const parsed = parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
+}
+
+const MAX_UPSTREAM_ATTEMPTS = envInt('MAX_UPSTREAM_ATTEMPTS', 2, { min: 1, max: 10 });
+
+function getMaxUpstreamAttempts() {
+  const active = getAccountList().filter(a => a.status === 'active').length;
+  return Math.max(1, Math.min(MAX_UPSTREAM_ATTEMPTS, Math.max(1, active)));
+}
 
 function endsAtNaturalBoundary(text) {
   if (!text) return false;
@@ -1064,12 +1079,9 @@ export async function handleChatCompletions(body) {
   // Non-stream: retry with a different account on model-not-available errors
   const tried = [];
   let lastErr = null;
-  // Dynamic: try every active account in the pool (capped at 10) so a
-  // large pool with many rate-limited accounts can still fall through
-  // to a free one. Was hardcoded 3 — in pools bigger than 3 with the
-  // first accounts rate-limited, healthy accounts were never reached
-  // even though they would have worked (issue #5).
-  const maxAttempts = Math.min(10, Math.max(3, getAccountList().filter(a => a.status === 'active').length));
+  // Retry sparingly. Each attempt is a real Cascade/model request; large Trial
+  // pools should not fan one client request out across many high-end accounts.
+  const maxAttempts = getMaxUpstreamAttempts();
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     let acct = null;
     if (reuseEntry && attempt === 0) {
@@ -1085,6 +1097,7 @@ export async function handleChatCompletions(body) {
       if (!acct) break;
     }
     tried.push(acct.apiKey);
+    try {
 
     // Pre-flight rate limit check (experimental): ask server.codeium.com if
     // this account still has message capacity before burning an LS round trip.
@@ -1162,6 +1175,9 @@ export async function handleChatCompletions(body) {
       continue;
     }
     break; // other errors (502, transport) — don't retry
+    } finally {
+      releaseAccount(acct.apiKey);
+    }
   }
   // If all accounts exhausted, check if it's because they're all rate-limited
   if (!lastErr || lastErr.status === 429) {
@@ -1466,12 +1482,9 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
       let currentApiKey = null;
       let lastErr = null;
       let shortToolStopRetries = 0;
-      // Dynamic: try every active account in the pool (capped at 10) so a
-  // large pool with many rate-limited accounts can still fall through
-  // to a free one. Was hardcoded 3 — in pools bigger than 3 with the
-  // first accounts rate-limited, healthy accounts were never reached
-  // even though they would have worked (issue #5).
-  const maxAttempts = Math.min(10, Math.max(3, getAccountList().filter(a => a.status === 'active').length));
+      // Retry sparingly. Each attempt is a real Cascade/model request; large
+      // Trial pools should not fan one client request out across many accounts.
+      const maxAttempts = getMaxUpstreamAttempts();
 
       let accText = '';
       let accThinking = '';
@@ -1705,6 +1718,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
           }
           tried.push(acct.apiKey);
           currentApiKey = acct.apiKey;
+          try {
 
           if (isExperimentalEnabled('preflightRateLimit')) {
             try {
@@ -1937,6 +1951,9 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
               sawUpstreamProgress: attemptSawProgress,
             });
             break;
+          }
+          } finally {
+            releaseAccount(acct.apiKey);
           }
         }
 

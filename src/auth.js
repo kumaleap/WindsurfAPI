@@ -26,13 +26,89 @@ const FREE_TIER_CANARIES = ['gpt-4o-mini', 'gemini-2.5-flash'];
 const TOKEN_REFRESH_INTERVAL = 50 * 60 * 1000;
 let _tokenRefreshTimer = null;
 
-// Per-tier requests-per-minute limits. Used for both filter-by-cap and
-// weighted selection (accounts with more headroom are preferred).
-const TIER_RPM = { pro: 60, free: 10, unknown: 20, expired: 0 };
+function envInt(name, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return fallback;
+  const parsed = parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
+}
+
+function envBool(name, fallback = false) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return fallback;
+  return /^(1|true|yes|on)$/i.test(String(raw));
+}
+
+function parseEnvList(raw = '') {
+  return String(raw)
+    .split(/[\s,]+/)
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+// Per-tier requests-per-minute limits. Trial accounts are intentionally much
+// lower than paid Pro: Windsurf exposes Trial as pro-like in user status, but
+// still applies separate short-window/provider caps.
+const TIER_RPM = {
+  pro: envInt('RPM_LIMIT_PRO', 20, { min: 1 }),
+  free: envInt('RPM_LIMIT_FREE', 6, { min: 1 }),
+  unknown: envInt('RPM_LIMIT_UNKNOWN', 6, { min: 1 }),
+  expired: 0,
+};
+const TRIAL_RPM = envInt('RPM_LIMIT_TRIAL', 4, { min: 1 });
+const TIER_INFLIGHT = {
+  pro: envInt('MAX_INFLIGHT_PRO', 2, { min: 1 }),
+  free: envInt('MAX_INFLIGHT_FREE', 1, { min: 1 }),
+  unknown: envInt('MAX_INFLIGHT_UNKNOWN', 1, { min: 1 }),
+  expired: 0,
+};
+const TRIAL_INFLIGHT = envInt('MAX_INFLIGHT_TRIAL', 1, { min: 1 });
 const RPM_WINDOW_MS = 60 * 1000;
+const ENABLE_CASCADE_PREWARM = envBool('ENABLE_CASCADE_PREWARM', false);
+const MAX_TRIAL_ANTHROPIC_CREDIT = envInt('MAX_TRIAL_ANTHROPIC_CREDIT', 1, { min: 0 });
+
+function accountPlanName(account) {
+  return String(account?.userStatus?.planName || account?.credits?.planName || account?.planName || '');
+}
+
+function isTrialAccount(account) {
+  return /trial/i.test(accountPlanName(account));
+}
 
 function rpmLimitFor(account) {
+  if (isTrialAccount(account)) return TRIAL_RPM;
   return TIER_RPM[account.tier || 'unknown'] ?? 20;
+}
+
+function inflightLimitFor(account) {
+  if (isTrialAccount(account)) return TRIAL_INFLIGHT;
+  return TIER_INFLIGHT[account.tier || 'unknown'] ?? 1;
+}
+
+export function getAccountPolicy(account) {
+  return {
+    rpmLimit: rpmLimitFor(account),
+    inflightLimit: inflightLimitFor(account),
+    isTrial: isTrialAccount(account),
+    tier: account?.tier || 'unknown',
+    planName: accountPlanName(account),
+  };
+}
+
+function accountInflight(account) {
+  return Math.max(0, Number(account?._inflight || 0));
+}
+
+function checkoutAccount(account) {
+  account._inflight = accountInflight(account) + 1;
+  account.lastUsed = Date.now();
+}
+
+export function releaseAccount(apiKey) {
+  const account = accounts.find(a => a.apiKey === apiKey);
+  if (!account) return;
+  account._inflight = Math.max(0, accountInflight(account) - 1);
 }
 
 function pruneRpmHistory(account, now) {
@@ -428,6 +504,12 @@ export function setAccountBlockedModels(id, blockedModels) {
 export function isModelAllowedForAccount(account, modelKey) {
   const tierModels = getTierModels(account.tier || 'unknown');
   if (!tierModels.includes(modelKey)) return false;
+  const info = MODELS[modelKey];
+  if (isTrialAccount(account)
+    && info?.provider === 'anthropic'
+    && Number(info.credit || 0) > MAX_TRIAL_ANTHROPIC_CREDIT) {
+    return false;
+  }
   const blocked = account.blockedModels || [];
   if (blocked.includes(modelKey)) return false;
   const cap = account.capabilities?.[modelKey];
@@ -554,13 +636,14 @@ export function getApiKey(excludeKeys = [], modelKey = null) {
     if (excludeKeys.includes(a.apiKey)) continue;
     if (isRateLimitedForModel(a, modelKey, now)) continue;
     if (isTemporarilyCoolingModel(a, modelKey, now)) continue;
-    const limit = rpmLimitFor(a);
+    const { rpmLimit: limit, inflightLimit } = getAccountPolicy(a);
     if (limit <= 0) continue; // expired tier
+    if (inflightLimit <= 0 || accountInflight(a) >= inflightLimit) continue;
     const used = pruneRpmHistory(a, now);
     if (used >= limit) continue;
     // Tier entitlement + per-account blocklist filter
     if (modelKey && !isModelAllowedForAccount(a, modelKey)) continue;
-    candidates.push({ account: a, used, limit });
+    candidates.push({ account: a, used, limit, inflightLimit });
   }
   if (candidates.length === 0) return null;
 
@@ -575,7 +658,7 @@ export function getApiKey(excludeKeys = [], modelKey = null) {
 
   const { account } = candidates[0];
   account._rpmHistory.push(now);
-  account.lastUsed = now;
+  checkoutAccount(account);
   return {
     id: account.id, email: account.email, apiKey: account.apiKey,
     runtimeApiKey: getRuntimeApiKeyForAccount(account),
@@ -598,13 +681,14 @@ export function acquireAccountByKey(apiKey, modelKey = null) {
   if (a.status !== 'active') return null;
   if (isRateLimitedForModel(a, modelKey, now)) return null;
   if (isTemporarilyCoolingModel(a, modelKey, now)) return null;
-  const limit = rpmLimitFor(a);
+  const { rpmLimit: limit, inflightLimit } = getAccountPolicy(a);
   if (limit <= 0) return null;
+  if (inflightLimit <= 0 || accountInflight(a) >= inflightLimit) return null;
   const used = pruneRpmHistory(a, now);
   if (used >= limit) return null;
   if (modelKey && !isModelAllowedForAccount(a, modelKey)) return null;
   a._rpmHistory.push(now);
-  a.lastUsed = now;
+  checkoutAccount(a);
   return {
     id: a.id, email: a.email, apiKey: a.apiKey,
     runtimeApiKey: getRuntimeApiKeyForAccount(a),
@@ -620,9 +704,17 @@ export function getRpmStats() {
   const now = Date.now();
   const out = {};
   for (const a of accounts) {
-    const limit = rpmLimitFor(a);
+    const policy = getAccountPolicy(a);
+    const limit = policy.rpmLimit;
     const used = pruneRpmHistory(a, now);
-    out[a.id] = { used, limit, tier: a.tier || 'unknown' };
+    out[a.id] = {
+      used,
+      limit,
+      inflight: accountInflight(a),
+      inflightLimit: policy.inflightLimit,
+      tier: policy.tier,
+      planName: policy.planName,
+    };
   }
   return out;
 }
@@ -643,7 +735,7 @@ export async function ensureLsForAccount(accountId) {
     // account/LS pair doesn't pay the panel bootstrap cost. Fire-and-forget —
     // chat requests still await the same Promise if it hasn't finished yet.
     const runtimeApiKey = getRuntimeApiKeyForAccount(account);
-    if (ls && runtimeApiKey) {
+    if (ENABLE_CASCADE_PREWARM && ls && runtimeApiKey) {
       const { WindsurfClient } = await import('./client.js');
       const client = new WindsurfClient(runtimeApiKey, ls.port, ls.csrfToken);
       client.warmupCascade().catch(e => log.warn(`Cascade warmup failed: ${e.message}`));
@@ -793,7 +885,8 @@ export function getAccountList() {
   const now = Date.now();
   return accounts.map(a => {
     const runtimeApiKey = getRuntimeApiKeyForAccount(a);
-    const rpmLimit = rpmLimitFor(a);
+    const policy = getAccountPolicy(a);
+    const rpmLimit = policy.rpmLimit;
     const rpmUsed = pruneRpmHistory(a, now);
     const rateLimitState = getActiveRateLimitState(a, now);
     return {
@@ -821,6 +914,9 @@ export function getAccountList() {
       ) : {},
       rpmUsed,
       rpmLimit,
+      inflight: accountInflight(a),
+      inflightLimit: policy.inflightLimit,
+      isTrial: policy.isTrial,
       credits: a.credits || null,
       blockedModels: a.blockedModels || [],
       availableModels: getAvailableModelsForAccount(a),
@@ -1005,18 +1101,26 @@ export async function fetchUserStatus(id) {
   return status;
 }
 
-// Expanded canary set — one representative per routing path / provider family.
-// Order matters: free-tier models first so tier can be inferred early even if
-// later requests rate-limit. modelUid-only entries cover the 4.6 series since
-// GetUserStatus's allowlist is enum-keyed.
-const PROBE_CANARIES = [
-  'gpt-4o-mini',
-  'gemini-2.5-flash',
+// Canary probes are real model calls, not metadata checks. Default to metadata
+// only: GetUserStatus gives the authoritative tier/allowlist for most models,
+// while background canaries across many accounts burn short-window provider
+// limits. Operators can opt into specific canaries when debugging entitlement.
+const EXPENSIVE_PROBE_CANARIES = [
   'claude-sonnet-4.6',
   'claude-opus-4.6',
   'gemini-3.0-flash',
   'claude-4.5-sonnet',
 ];
+const configuredProbeCanaries = parseEnvList(process.env.PROBE_CANARIES || '');
+const ENABLE_EXPENSIVE_PROBE = envBool('ENABLE_EXPENSIVE_PROBE', false);
+const PROBE_CANARIES = [
+  ...configuredProbeCanaries,
+  ...(ENABLE_EXPENSIVE_PROBE ? EXPENSIVE_PROBE_CANARIES : []),
+];
+
+export function getProbeCanaries() {
+  return [...PROBE_CANARIES];
+}
 
 /**
  * Probe an account's tier and model capabilities.

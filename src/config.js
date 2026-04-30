@@ -51,7 +51,7 @@ export const config = {
   codeiumPassword: process.env.CODEIUM_PASSWORD || '',
 
   codeiumApiUrl: process.env.CODEIUM_API_URL || 'https://server.self-serve.windsurf.com',
-  defaultModel: process.env.DEFAULT_MODEL || 'claude-4.5-sonnet-thinking',
+  defaultModel: process.env.DEFAULT_MODEL || 'claude-4.5-haiku',
   maxTokens: parseInt(process.env.MAX_TOKENS || '8192', 10),
   logLevel: process.env.LOG_LEVEL || 'info',
 
